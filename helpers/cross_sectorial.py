@@ -14,7 +14,7 @@ from tqdm.auto import tqdm
 
 
 class CS_DATAMODULE(pl.LightningDataModule):
-    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, train_workers=0) -> None:
+    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, train_workers=0, overwrite_cache=False) -> None:
         """
         DataModule for the CS baseline model.
 
@@ -40,6 +40,7 @@ class CS_DATAMODULE(pl.LightningDataModule):
         self.pred_horizon = pred_horizon
         self.multistep = multistep
         self.data_type = data_type
+        self.overwrite_cache = overwrite_cache
 
         if data_type == "monthly":
             self.fin_path = "./DATA/Monthly/Processed/month_data_fin_tec.parquet"
@@ -65,7 +66,7 @@ class CS_DATAMODULE(pl.LightningDataModule):
             f"./cache/cs/cnn_lstm/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy"
         ]
 
-        if all(os.path.exists(file) for file in possible_cache_files):
+        if (all(os.path.exists(file) for file in possible_cache_files)) and (not self.overwrite_cache):
             pass
 
         else:
@@ -109,7 +110,7 @@ class CS_DATAMODULE(pl.LightningDataModule):
 
 
 class CS_VID_DATAMODULE(pl.LightningDataModule):
-    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, train_workers=0, resize=None) -> None:
+    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, train_workers=0, resize=None, overwrite_cache=False, pred_target="price") -> None:
         """
         DataModule for the CS baseline model.
 
@@ -138,6 +139,8 @@ class CS_VID_DATAMODULE(pl.LightningDataModule):
         self.multistep = multistep
         self.data_type = data_type
         self.resize = resize
+        self.overwrite_cache = overwrite_cache
+        self.pred_target = pred_target
 
         if data_type == "monthly":
             self.fin_path = "./DATA/Monthly/Processed/month_data_fin_tec.parquet"
@@ -163,7 +166,7 @@ class CS_VID_DATAMODULE(pl.LightningDataModule):
             f"./cache/cs/convlstm_ae/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy"
         ]
 
-        if all(os.path.exists(file) for file in possible_cache_files):
+        if (all(os.path.exists(file) for file in possible_cache_files)) and (not self.overwrite_cache):
             pass
 
         else:
@@ -177,7 +180,8 @@ class CS_VID_DATAMODULE(pl.LightningDataModule):
                                                                                     lookback=self.lookback, 
                                                                                     pred_horizon=self.pred_horizon,
                                                                                     multistep=self.multistep,
-                                                                                    resize=self.resize)
+                                                                                    resize=self.resize,
+                                                                                    pred_target=self.pred_target)
 
             np.save(f"./cache/cs/convlstm_ae/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", X_train)
             np.save(f"./cache/cs/convlstm_ae/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", X_val)
@@ -219,19 +223,24 @@ def _create_timeseries_features(dataframe):
 
     return df
 
-def pt_minmax_scale(tensor):
+def _pt_minmax_scale(tensor):
     scale = 1.0 / (tensor.max(dim=1, keepdim=True)[0] - tensor.min(dim=1, keepdim=True)[0]) 
     tensor.mul_(scale).sub_(tensor.min(dim=1, keepdim=True)[0])
     return tensor
 
-def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=False, resize=None):
+def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=False, resize=None, pred_target="price"):
     if not lookback:
         lookback = pred_horizon * 2
     if multistep and pred_horizon == 1:
         raise ValueError("Multistep only applicable for pred_horizon > 1")
 
-    returns = (fin_data.copy().filter(regex="_CP$", axis=1).pct_change(pred_horizon) * 100).iloc[1:, :400] # Returns in percentage (since values > 1 needed to turn into pixels)
-    returns = pd.DataFrame(np.nan_to_num(returns, posinf=0, neginf=0, nan=0), columns=returns.columns, index=returns.index) # Missing values set to 0
+    if pred_target == "return":
+        returns = (fin_data.copy().filter(regex="_CP$", axis=1).pct_change(pred_horizon) * 100).iloc[pred_horizon:, :400] # Returns in percentage (since values > 1 needed to turn into pixels)
+        returns = returns.replace([np.inf, -np.inf], np.nan).fillna(0) # Missing values set to 0
+
+    else:
+        returns = fin_data.copy().filter(regex="_CP$", axis=1).iloc[:, :400] # Actual prices
+        returns = returns.replace([np.inf, -np.inf], np.nan).fillna(0) # Missing values set to 0
 
     # Turn each timestep into a picture (20x20 pixels) of returns (0-255) - 0 is black, 255 is white - 0 is lowest return, 255 is highest return
     features = []
@@ -240,7 +249,8 @@ def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=Fa
         img = (torch.from_numpy(timestep).float().sigmoid() * 255).reshape(20, 20)
         if resize:
             img = TVF.resize(img.unsqueeze(dim=0), resize, antialias=True).squeeze()
-        features.append(pt_minmax_scale(img))
+
+        features.append(img/255) # scale to 0-1
 
     features = torch.stack(features)
     X_sequences, y_sequences = [], []

@@ -13,7 +13,8 @@ from sklearn.metrics import (mean_absolute_error,
 from torch import mps
 
 from helpers.cross_sectorial import CS_DATAMODULE, CS_VID_DATAMODULE
-from models.cross_sectorial import CNN_1D_LSTM, ConvLSTM_AE
+from models.cross_sectorial import (CNN_1D_LSTM, CNN_2D_LSTM, ConvLSTM,
+                                    ConvLSTM_AE)
 
 
 def main():
@@ -22,29 +23,32 @@ def main():
     # Set global seed for reproducibility in numpy, torch, scikit-learn
     pl.seed_everything(42)
 
-    DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    LEARNING_RATE = 1e-4 # 1e-4 ind standard
-    EPOCHS = 300
-    BATCH_SIZE = 16
+    DEVICE = "cpu" # torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    LEARNING_RATE = 1e-2 # 1e-4 ind standard
+    EPOCHS = 1000
+    BATCH_SIZE = 64
     LOOKBACK = 12
     PRED_HORIZON = 1
     MULTISTEP = False
 
-    data = CS_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="monthly")
+    data = CS_VID_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="daily", resize=None, overwrite_cache=True, pred_target="return")
+    # data = CS_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="monthly")
     
-    model = CNN_1D_LSTM(cnn_input_size=409, lstm_input_size=159, hidden_size=128, num_layers=2, output_size=409, lookback=LOOKBACK, dropout=0)
-    compiled_model = torch.compile(model, mode="reduce-overhead", backend="aot_eager")
+    model = ConvLSTM_AE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, hidden_dim=64)
+    # model = CNN_2D_LSTM(cnn_input_size=409, lstm_input_size=159*10, hidden_size=159*2, num_layers=1, output_size=409, lookback=LOOKBACK, dropout=0)
+    # model = CNN_1D_LSTM(cnn_input_size=409, lstm_input_size=159, hidden_size=128, num_layers=2, output_size=409, lookback=LOOKBACK, dropout=0)
+    # compiled_model = torch.compile(model, mode="reduce-overhead", backend="aot_eager")
 
-    early_stopping = pl.callbacks.EarlyStopping(monitor="val_loss", patience=10, mode="min")
+    early_stopping = pl.callbacks.EarlyStopping(monitor="val_loss", patience=1000, mode="min")
     checkpoint_callback = pl.callbacks.ModelCheckpoint(save_top_k=1, monitor="val_loss", mode="min")
 
-    trainer = pl.Trainer(accelerator="cpu", max_epochs=EPOCHS, log_every_n_steps=1, callbacks=[early_stopping, checkpoint_callback], enable_checkpointing=True, enable_progress_bar=True, default_root_dir="./lightning_logs/convae/")
-    trainer.fit(model=compiled_model, datamodule=data)
+    trainer = pl.Trainer(accelerator=DEVICE, max_epochs=EPOCHS, log_every_n_steps=1, callbacks=[early_stopping, checkpoint_callback], enable_checkpointing=True, enable_progress_bar=True, default_root_dir="./lightning_logs/convae/")
+    trainer.fit(model=model, datamodule=data)
 
     print(f"Best model path: {checkpoint_callback.best_model_path}")
     print(f"Best model score: {checkpoint_callback.best_model_score}")
 
-    best_model = CNN_1D_LSTM.load_from_checkpoint(checkpoint_path=checkpoint_callback.best_model_path).to(DEVICE)
+    best_model = ConvLSTM_AE.load_from_checkpoint(checkpoint_path=checkpoint_callback.best_model_path).to(DEVICE)
 
     best_model.eval()
     with torch.inference_mode():
