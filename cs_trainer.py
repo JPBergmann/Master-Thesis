@@ -10,7 +10,7 @@ from pytorch_ranger import Ranger
 from sklearn.metrics import (mean_absolute_error,
                              mean_absolute_percentage_error,
                              mean_squared_error, r2_score)
-from torch import mps
+from torch import mps, cuda
 
 from helpers.cross_sectorial import CS_DATAMODULE, CS_VID_DATAMODULE
 from models.cross_sectorial import (CNN_1D_LSTM, CNN_2D_LSTM, ConvLSTM,
@@ -18,12 +18,21 @@ from models.cross_sectorial import (CNN_1D_LSTM, CNN_2D_LSTM, ConvLSTM,
 
 
 def main():
+
+    if torch.cuda.is_available():
+        DEVICE = "cuda"
+        gpu = cuda
+    elif torch.backends.mps.is_available():
+        DEVICE = "mps"
+        gpu = mps
+    else:
+        DEVICE = "cpu"
+
     # Clear GPU cache
-    mps.empty_cache()
+    gpu.empty_cache()
     # Set global seed for reproducibility in numpy, torch, scikit-learn
     pl.seed_everything(42)
 
-    DEVICE = "cpu" # torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     LEARNING_RATE = 1e-2 # 1e-4 ind standard
     EPOCHS = 1000
     BATCH_SIZE = 64
@@ -39,7 +48,7 @@ def main():
     # model = CNN_1D_LSTM(cnn_input_size=409, lstm_input_size=159, hidden_size=128, num_layers=2, output_size=409, lookback=LOOKBACK, dropout=0)
     # compiled_model = torch.compile(model, mode="reduce-overhead", backend="aot_eager")
 
-    early_stopping = pl.callbacks.EarlyStopping(monitor="val_loss", patience=1000, mode="min")
+    early_stopping = pl.callbacks.EarlyStopping(monitor="val_loss", patience=100, mode="min")
     checkpoint_callback = pl.callbacks.ModelCheckpoint(save_top_k=1, monitor="val_loss", mode="min")
 
     trainer = pl.Trainer(accelerator=DEVICE, max_epochs=EPOCHS, log_every_n_steps=1, callbacks=[early_stopping, checkpoint_callback], enable_checkpointing=True, enable_progress_bar=True, default_root_dir="./lightning_logs/convae/")
@@ -63,7 +72,7 @@ def main():
     print(np.round(data.y_val_tensor.squeeze().cpu().detach().numpy(), 2))
 
     # Clear GPU cache
-    mps.empty_cache()
+    gpu.empty_cache()
 
 if __name__ == "__main__":
     main()
