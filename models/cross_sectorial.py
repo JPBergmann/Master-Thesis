@@ -514,9 +514,9 @@ class ConvLSTM_AE(pl.LightningModule):
         self.manual_backward(loss)
         optimizer.step()
 
-        sch = self.lr_schedulers()
-        if self.trainer.is_last_batch and (self.trainer.current_epoch + 1) % 50 == 0:
-            sch.step()
+        # sch = self.lr_schedulers()
+        # if self.trainer.is_last_batch and (self.trainer.current_epoch + 1) % 50 == 0:
+        #    sch.step()
 
         return loss
 
@@ -533,5 +533,5 @@ class ConvLSTM_AE(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = Ranger(self.parameters(), lr=self.lr)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, verbose=True)
-        return [optimizer], [scheduler]
+        # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, verbose=True)
+        return [optimizer]#, [scheduler]

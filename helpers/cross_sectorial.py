@@ -110,7 +110,7 @@ class CS_DATAMODULE(pl.LightningDataModule):
 
 
 class CS_VID_DATAMODULE(pl.LightningDataModule):
-    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, train_workers=0, resize=None, overwrite_cache=False, pred_target="price") -> None:
+    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, train_workers=0, resize=None, overwrite_cache=False, pred_target="return") -> None:
         """
         DataModule for the CS baseline model.
 
@@ -228,7 +228,7 @@ def _pt_minmax_scale(tensor):
     tensor.mul_(scale).sub_(tensor.min(dim=1, keepdim=True)[0])
     return tensor
 
-def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=False, resize=None, pred_target="price"):
+def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=False, resize=None, pred_target="return"):
     if not lookback:
         lookback = pred_horizon * 2
     if multistep and pred_horizon == 1:
@@ -244,7 +244,7 @@ def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=Fa
 
     # Turn each timestep into a picture (20x20 pixels) of returns (0-255) - 0 is black, 255 is white - 0 is lowest return, 255 is highest return
     features = []
-    for i in range(len(returns)):
+    for i in tqdm(range(len(returns)), desc="Converting returns into video sequences"):
         timestep = returns.iloc[i, :].values # Scale each img seperately?
         img = (torch.from_numpy(timestep).float().sigmoid() * 255).reshape(20, 20)
         if resize:
@@ -256,7 +256,7 @@ def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=Fa
     X_sequences, y_sequences = [], []
 
     if multistep:
-        for i in range(len(features) - lookback):
+        for i in tqdm(range(len(features) - lookback), desc="Formatting tensors"):
             lookback_idx = i + lookback
             pred_idx = lookback_idx + pred_horizon - 1
 
@@ -269,7 +269,7 @@ def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=Fa
             y_sequences.append(y_seq)
 
     else:
-        for i in range(len(features) - lookback):
+        for i in tqdm(range(len(features) - lookback), desc="Formatting tensors"):
             lookback_idx = i + lookback
             pred_idx = lookback_idx + pred_horizon - 1
 
@@ -303,11 +303,16 @@ def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=Fa
 
     X_train, X_val, X_test = X[:train_split], X[val_split], X[test_split]
     y_train, y_val, y_test = y[:train_split], y[val_split], y[test_split]
-
+    
     X_val = X_val.reshape(1, X_val.shape[0], X_val.shape[1], X_val.shape[2], X_val.shape[3])
     X_test = X_test.reshape(1, X_test.shape[0], X_test.shape[1], X_test.shape[2], X_val.shape[3])
-    y_val = y_val.reshape(1, y_val.shape[0], y_val.shape[1], y_val.shape[2])
-    y_test = y_test.reshape(1, y_test.shape[0], y_test.shape[1], y_test.shape[2])
+    
+    if multistep:
+        y_val = y_val.reshape(1, y_val.shape[0], y_val.shape[1], y_val.shape[2],  y_val.shape[3])
+        y_test = y_test.reshape(1, y_test.shape[0], y_test.shape[1], y_test.shape[2],  y_val.shape[3])
+    else:
+        y_val = y_val.reshape(1, y_val.shape[0], y_val.shape[1], y_val.shape[2])
+        y_test = y_test.reshape(1, y_test.shape[0], y_test.shape[1], y_test.shape[2])
 
     return X_train, X_val, X_test, y_train, y_val, y_test
 
