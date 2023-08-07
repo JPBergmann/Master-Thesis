@@ -13,8 +13,7 @@ from sklearn.metrics import (mean_absolute_error,
 from torch import mps, cuda
 
 from helpers.cross_sectorial import CS_DATAMODULE, CS_VID_DATAMODULE
-from models.cross_sectorial import (CNN_1D_LSTM, CNN_2D_LSTM, ConvLSTM,
-                                    ConvLSTM_AE)
+from models.cross_sectorial import (CNN_1D_LSTM, CNN_2D_LSTM, ConvLSTM_AE)
 
 
 def main():
@@ -22,7 +21,7 @@ def main():
     if torch.cuda.is_available():
         DEVICE = "cuda"
         gpu = cuda
-        torch.set_float32_matmul_precision("medium")
+        torch.set_float32_matmul_precision("high")
     elif torch.backends.mps.is_available():
         DEVICE = "mps"
         gpu = mps
@@ -36,22 +35,22 @@ def main():
     pl.seed_everything(42)
 
     LEARNING_RATE = 1e-4 # 1e-4 ind standard
-    EPOCHS = 50
-    BATCH_SIZE = 16
-    LOOKBACK = 24*21
-    PRED_HORIZON = 21
-    MULTISTEP = True
+    EPOCHS = 10_000
+    BATCH_SIZE = 32
+    LOOKBACK = 12
+    PRED_HORIZON = 1
+    MULTISTEP = False
     TRAIN_WORKERS = 0 # 0 fastest ...
 
-    data = CS_VID_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="daily", resize=None, overwrite_cache=False, pred_target="return", train_workers=TRAIN_WORKERS)
-    # data = CS_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="monthly")
+    # data = CS_VID_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="monthly", resize=None, overwrite_cache=True, pred_target="return", train_workers=TRAIN_WORKERS)
+    data = CS_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="monthly", pred_target="price", overwrite_cache=True)
     
-    model = ConvLSTM_AE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=21, hidden_dim=20) # Pred 1 not 21 since 1 Frame pred!!!!!! (only > 1 if data prep is multistep)
-    # model = CNN_2D_LSTM(cnn_input_size=409, lstm_input_size=159*10, hidden_size=159*2, num_layers=1, output_size=409, lookback=LOOKBACK, dropout=0)
+    # model = ConvLSTM_AE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=1, hidden_dim=64) # Pred 1 not 21 since 1 Frame pred!!!!!! (only > 1 if data prep is multistep)
+    model = CNN_2D_LSTM(cnn_input_size=409, lstm_input_size=159*10, hidden_size=159*3, num_layers=1, output_size=409, lookback=LOOKBACK, dropout=0.2)
     # model = CNN_1D_LSTM(cnn_input_size=409, lstm_input_size=159, hidden_size=128, num_layers=2, output_size=409, lookback=LOOKBACK, dropout=0)
     # compiled_model = torch.compile(model, mode="reduce-overhead", backend="aot_eager")
 
-    early_stopping = pl.callbacks.EarlyStopping(monitor="val_loss", patience=10, mode="min")
+    early_stopping = pl.callbacks.EarlyStopping(monitor="val_loss", patience=20, mode="min")
     checkpoint_callback = pl.callbacks.ModelCheckpoint(save_top_k=1, monitor="val_loss", mode="min")
 
     trainer = pl.Trainer(accelerator=DEVICE, max_epochs=EPOCHS, log_every_n_steps=1, callbacks=[early_stopping, checkpoint_callback], enable_checkpointing=True, enable_progress_bar=True, default_root_dir="./lightning_logs/convae/")
@@ -60,7 +59,7 @@ def main():
     print(f"Best model path: {checkpoint_callback.best_model_path}")
     print(f"Best model score: {checkpoint_callback.best_model_score}")
 
-    best_model = ConvLSTM_AE.load_from_checkpoint(checkpoint_path=checkpoint_callback.best_model_path).to(DEVICE)
+    best_model = CNN_2D_LSTM.load_from_checkpoint(checkpoint_path=checkpoint_callback.best_model_path).to(DEVICE)
 
     best_model.eval()
     with torch.inference_mode():

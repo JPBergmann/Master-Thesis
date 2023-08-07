@@ -14,7 +14,7 @@ from tqdm.auto import tqdm
 
 
 class CS_DATAMODULE(pl.LightningDataModule):
-    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, train_workers=0, overwrite_cache=False) -> None:
+    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, train_workers=0, overwrite_cache=False, pred_target="return") -> None:
         """
         DataModule for the CS baseline model.
 
@@ -41,6 +41,7 @@ class CS_DATAMODULE(pl.LightningDataModule):
         self.multistep = multistep
         self.data_type = data_type
         self.overwrite_cache = overwrite_cache
+        self.pred_target = pred_target
 
         if data_type == "monthly":
             self.fin_path = "./DATA/Monthly/Processed/month_data_fin_tec.parquet"
@@ -81,7 +82,8 @@ class CS_DATAMODULE(pl.LightningDataModule):
                                                                             tickers=tickers,
                                                                             lookback=self.lookback, 
                                                                             pred_horizon=self.pred_horizon,
-                                                                            multistep=self.multistep)
+                                                                            multistep=self.multistep,
+                                                                            pred_target=self.pred_target)
 
             np.save(f"./cache/cs/cnn_lstm/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", X_train)
             np.save(f"./cache/cs/cnn_lstm/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", X_val)
@@ -223,10 +225,6 @@ def _create_timeseries_features(dataframe):
 
     return df
 
-def _pt_minmax_scale(tensor):
-    scale = 1.0 / (tensor.max(dim=1, keepdim=True)[0] - tensor.min(dim=1, keepdim=True)[0]) 
-    tensor.mul_(scale).sub_(tensor.min(dim=1, keepdim=True)[0])
-    return tensor
 
 def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=False, resize=None, pred_target="return"):
     if not lookback:
@@ -235,7 +233,7 @@ def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=Fa
         raise ValueError("Multistep only applicable for pred_horizon > 1")
 
     if pred_target == "return":
-        returns = (fin_data.copy().filter(regex="_CP$", axis=1).pct_change(pred_horizon) * 100).iloc[pred_horizon:, :400] # Returns in percentage (since values > 1 needed to turn into pixels)
+        returns = (fin_data.copy().filter(regex="_CP$", axis=1).pct_change(pred_horizon) * 100).iloc[pred_horizon:, :9] # Returns in percentage (since values > 1 needed to turn into pixels)
         returns = returns.replace([np.inf, -np.inf], np.nan).fillna(0) # Missing values set to 0
 
     else:
@@ -246,7 +244,7 @@ def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=Fa
     features = []
     for i in tqdm(range(len(returns)), desc="Converting returns into video sequences"):
         timestep = returns.iloc[i, :].values # Scale each img seperately?
-        img = (torch.from_numpy(timestep).float().sigmoid() * 255).reshape(20, 20)
+        img = (torch.from_numpy(timestep).float().sigmoid() * 255).reshape(3, 3)
         if resize:
             img = TVF.resize(img.unsqueeze(dim=0), resize, antialias=True).squeeze()
 
@@ -317,7 +315,7 @@ def _format_tensors_cs_vid(fin_data, lookback=None, pred_horizon=1, multistep=Fa
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 
-def _format_tensors_cs(fin_data, macro_data, tickers, lookback=None, pred_horizon=1, multistep=False):
+def _format_tensors_cs(fin_data, macro_data, tickers, lookback=None, pred_horizon=1, multistep=False, pred_target="return"):
     if not lookback:
         lookback = pred_horizon * 2
     if multistep and pred_horizon == 1:
@@ -332,7 +330,12 @@ def _format_tensors_cs(fin_data, macro_data, tickers, lookback=None, pred_horizo
 
         features = pd.concat([fin_df, macro_df], axis=1)
         features.loc[~(features[f"{ticker}_CP"] > 0), features.columns] = 0 # Make all rows where the target is 0 also 0
-        target = features.filter(regex=f"{ticker}_CP")
+        if pred_target == "return":
+            target = (features.filter(regex=f"{ticker}_CP").pct_change(pred_horizon) * 100).iloc[pred_horizon:, :]
+            target = target.replace([np.inf, -np.inf], np.nan).fillna(0)
+            features = features.iloc[pred_horizon:, :]
+        else:
+            target = features.filter(regex=f"{ticker}_CP")
         # features = features.drop(
         #     columns=[
         #         f"{ticker}_CP",
@@ -345,6 +348,134 @@ def _format_tensors_cs(fin_data, macro_data, tickers, lookback=None, pred_horizo
         # )  # Might make model worse but safety against any leakage (appears to actually improve performance)
 
         X_sequences, y_sequences = [], []
+
+        if multistep:
+            for i in range(len(features) - lookback):
+                lookback_idx = i + lookback
+                pred_idx = lookback_idx + pred_horizon - 1
+
+                if pred_idx > len(features) - 1:
+                    continue
+
+                X_seq = features.iloc[i:lookback_idx]
+                y_seq = target.iloc[lookback_idx : pred_idx + 1]
+                X_sequences.append(X_seq.values)
+                y_sequences.append(y_seq.values)
+
+        else:
+            for i in range(len(features) - lookback):
+                lookback_idx = i + lookback
+                pred_idx = lookback_idx + pred_horizon - 1
+
+                if pred_idx > len(features) - 1:
+                    continue
+
+                X_seq = features.iloc[i:lookback_idx]
+                y_seq = target.iloc[pred_idx]
+                X_sequences.append(X_seq.values)
+                y_sequences.append(y_seq.values)
+
+        X, y = np.array(X_sequences), np.array(y_sequences)
+
+        Xs.append(X)
+        ys.append(y)
+
+    # Define split indices (since numpy differs from list slicing)
+    test_split = -1
+    val_split = (pred_horizon + 1) * -1
+    train_split = (2 * pred_horizon) * -1
+
+    X_tens = np.stack(Xs)
+    X_tens = scale(X_tens.reshape(X_tens.shape[0], -1)).reshape(X_tens.shape)
+    y_tens = np.stack(ys)
+
+    # Give data shape of (n_samples, channels, timesteps, features)
+    X_tens = np.transpose(X_tens, (1, 0, 2, 3))
+    y_tens = np.transpose(y_tens.squeeze(), (1, 0))
+    
+    #return X_tens, y_tens
+    X_train, X_val, X_test = X_tens[:train_split], X_tens[val_split], X_tens[test_split]
+    y_train, y_val, y_test = y_tens[:train_split], y_tens[val_split], y_tens[test_split]
+
+    # Walk forward validation (validation is always the trained data + 1) ??????????????
+
+    X_val = X_val.reshape(1, X_val.shape[0], X_val.shape[1], X_val.shape[2])
+    X_test = X_test.reshape(1, X_test.shape[0], X_test.shape[1], X_test.shape[2])
+
+    y_val = y_val.reshape(1, -1)
+    y_test = y_test.reshape(1, -1)
+
+    return X_train, X_val, X_test, y_train, y_val, y_test
+
+
+def _format_tensors_cs_1dim(fin_data, macro_data, tickers, lookback=None, pred_horizon=1, multistep=False, onlyprices=False, pred_target="return"):
+    if not lookback:
+        lookback = pred_horizon * 2
+    if multistep and pred_horizon == 1:
+        raise ValueError("Multistep only applicable for pred_horizon > 1")
+
+    X_sequences, y_sequences = [], []
+        
+    if onlyprices:
+
+        if pred_target == "return":
+            returns = (fin_data.copy().filter(regex="_CP$", axis=1).pct_change(pred_horizon) * 100).iloc[pred_horizon:, :] # Returns in percentage (since values > 1 needed to turn into pixels)
+            features = returns.replace([np.inf, -np.inf], np.nan).fillna(0) # Missing values set to 0
+        else:
+            features = fin_data.copy().filter(regex="_CP$", axis=1)
+
+        if multistep:
+            for i in range(len(features) - lookback):
+                lookback_idx = i + lookback
+                pred_idx = lookback_idx + pred_horizon - 1
+
+                if pred_idx > len(features) - 1:
+                    continue
+
+                X_seq = features.iloc[i:lookback_idx]
+                y_seq = features.iloc[lookback_idx : pred_idx + 1]
+                X_sequences.append(X_seq.values)
+                y_sequences.append(y_seq.values)
+
+        else:
+            for i in range(len(features) - lookback):
+                lookback_idx = i + lookback
+                pred_idx = lookback_idx + pred_horizon - 1
+
+                if pred_idx > len(features) - 1:
+                    continue
+
+                X_seq = features.iloc[i:lookback_idx]
+                y_seq = features.iloc[pred_idx]
+                X_sequences.append(X_seq.values)
+                y_sequences.append(y_seq.values)
+
+    else:
+        """
+        - ADD MULTICOLINEARITY THRESHOLD
+        - List of DFs for each company concat to feature df. then add timeseries and also concat macro.
+        """
+        feature_dfs = []
+        targets = pd.DataFrame()
+        for ticker in tqdm(tickers, desc="Preparing Tensors"):
+            feature_df = fin_data.copy().filter(regex=f"^{ticker}_")
+            feature_df.loc[~(feature_df[f"{ticker}_CP"] > 0), feature_df.columns] = 0 # Make all rows where the target is 0 also 0
+            target = feature_df.filter(regex=f"{ticker}_CP")
+            targets[f"y_{ticker}"] = target
+            feature_df = feature_df.drop(
+                columns=[
+                    f"{ticker}_CP",
+                    f"{ticker}_OP",
+                    f"{ticker}_VOL",
+                    f"{ticker}_OP",
+                    f"{ticker}_LP",
+                    f"{ticker}_HP",
+                ]
+            )  # Might make model worse but safety against any leakage (appears to actually improve performance)
+
+        features = _create_timeseries_features(pd.concat([feature_dfs] + macro_data.copy(), axis=1))
+        return features, targets
+
 
         if multistep:
             for i in range(len(features) - lookback):
