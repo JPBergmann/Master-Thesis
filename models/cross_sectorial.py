@@ -98,53 +98,60 @@ class CNN_1D_LSTM(pl.LightningModule):
 
 
 class CNN_2D_LSTM(pl.LightningModule):
-    def __init__(self, cnn_input_size, lstm_input_size, hidden_size, num_layers, output_size, lookback, dropout, last_conv_size=10, lr=1e-3):
+    def __init__(self, cnn_input_size, n_features, hidden_size, num_layers, output_size, lookback, dropout, last_conv_size=1, bidirectional=False, lr=1e-3, reduction_factor=0.5):
         super().__init__()
 
         self.automatic_optimization = False
         self.save_hyperparameters()
         
         self.cnn_input_size = cnn_input_size
-        self.lstm_input_size = lstm_input_size
+        self.n_features = n_features
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.output_size = output_size
         self.lookback = lookback
         self.dropout = dropout
         self.last_conv_size = last_conv_size
+        self.bidirectional = bidirectional
         self.lr = lr
 
-        # Feature selection and dimensionality reduction using stacked 2D convolution layers that ultimately result in only 1 channel
+        # Feature selection and dimensionality reduction using stacked 2D convolution layers
         self.cnn = nn.Sequential(
-            nn.Conv2d(self.cnn_input_size, 200, kernel_size=1, stride=1, padding=0),
+            nn.Conv2d(in_channels=self.cnn_input_size, out_channels=self.cnn_input_size // 2, kernel_size=1),
             nn.ReLU(True),
-            nn.BatchNorm2d(200),
-            nn.Conv2d(200, 10, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(self.cnn_input_size//2),
+            nn.Conv2d(in_channels=self.cnn_input_size//2, out_channels=self.cnn_input_size, kernel_size=1),
             nn.ReLU(True),
-            nn.Flatten(),
-            nn.Dropout(self.dropout),
         )
 
         # LSTM layer
         self.lstm = nn.LSTM(
-            input_size=self.lstm_input_size,
+            input_size=self.n_features*self.last_conv_size,
             hidden_size=self.hidden_size,
             num_layers=self.num_layers,
             batch_first=True,
             dropout=0,  # Add dropout layer for regularization
-            bidirectional=True,
+            bidirectional=self.bidirectional,
         )
 
         # Fully connected layer
-        self.fc2 = nn.Sequential(
-            nn.Linear(self.hidden_size*2, self.output_size), # Bidirectional 2times output
-        )
+        if self.bidirectional:
+            self.fc2 = nn.Sequential(
+                nn.Linear(self.hidden_size*2, self.output_size), # Bidirectional 2times output
+            )
+        else:
+            self.fc2 = nn.Sequential(
+                nn.Linear(self.hidden_size, self.output_size),
+            )
 
     def forward(self, x):
         # CNN
         out = self.cnn(x)
-        out = out.reshape(out.shape[0], self.lookback, -1)
-        # # # # LSTM
+        if self.last_conv_size > 1:
+            out = out.reshape(out.shape[0], self.lookback, -1)
+        else:
+            out = out.squeeze(1)
+        # LSTM
         out, _ = self.lstm(out)
         out = self.fc2(out[:, -1, :])
         return out

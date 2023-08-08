@@ -8,13 +8,14 @@ import numpy as np
 import pandas as pd
 import torch
 import torchvision.transforms.functional as TVF
-from sklearn.preprocessing import minmax_scale, scale
+from sklearn.preprocessing import minmax_scale, scale, robust_scale
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
+from umap import UMAP
 
 
 class CS_DATAMODULE(pl.LightningDataModule):
-    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, train_workers=0, overwrite_cache=False, pred_target="return") -> None:
+    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type="monthly", train_workers=0, overwrite_cache=False, pred_target="return", cluster=None) -> None:
         """
         DataModule for the CS baseline model.
 
@@ -42,16 +43,26 @@ class CS_DATAMODULE(pl.LightningDataModule):
         self.data_type = data_type
         self.overwrite_cache = overwrite_cache
         self.pred_target = pred_target
+        self.cluster = cluster
 
         if data_type == "monthly":
             self.fin_path = "./DATA/Monthly/Processed/month_data_fin_tec.parquet"
             self.macro_path = "./DATA/Monthly/Processed/month_data_macro_USCA.parquet"
-            self.tickers_path = "./DATA/Tickers/month_tickers_clean.txt"
+            if cluster is not None:
+                self.tickers_path = f"./DATA/Tickers/month_tickers_clean_cluster{self.cluster}.txt"
+            else:
+                self.tickers_path = "./DATA/Tickers/month_tickers_clean.txt"
 
         elif data_type == "daily":
             self.fin_path = "./DATA/Daily/Processed/day_data_fin_tec.parquet"
             self.macro_path = "./DATA/Daily/Processed/day_data_macro_USCA.parquet"
-            self.tickers_path = "./DATA/Tickers/day_tickers_clean.txt"
+            if cluster is not None:
+                self.tickers_path = f"./DATA/Tickers/day_tickers_clean_cluster{self.cluster}.txt"
+            else:
+                self.tickers_path = "./DATA/Tickers/day_tickers_clean.txt"
+
+        with open(self.tickers_path, "r") as f:
+            self.tickers = f.read().strip().split("\n")
 
     def prepare_data(self):
 
@@ -74,12 +85,10 @@ class CS_DATAMODULE(pl.LightningDataModule):
         
             fin = pd.read_parquet(self.fin_path)
             macro = pd.read_parquet(self.macro_path)
-            with open(self.tickers_path, "r") as f:
-                tickers = f.read().strip().split("\n")
 
             X_train, X_val, X_test, y_train, y_val, y_test = _format_tensors_cs(fin_data=fin, 
                                                                             macro_data=macro,
-                                                                            tickers=tickers,
+                                                                            tickers=self.tickers,
                                                                             lookback=self.lookback, 
                                                                             pred_horizon=self.pred_horizon,
                                                                             multistep=self.multistep,
@@ -386,7 +395,7 @@ def _format_tensors_cs(fin_data, macro_data, tickers, lookback=None, pred_horizo
     train_split = (2 * pred_horizon) * -1
 
     X_tens = np.stack(Xs)
-    X_tens = scale(X_tens.reshape(X_tens.shape[0], -1)).reshape(X_tens.shape)
+    X_tens = scale(X_tens.reshape(X_tens.shape[0], -1)).reshape(X_tens.shape) # TODO: make scalers hyperparam
     y_tens = np.stack(ys)
 
     # Give data shape of (n_samples, channels, timesteps, features)
@@ -408,7 +417,7 @@ def _format_tensors_cs(fin_data, macro_data, tickers, lookback=None, pred_horizo
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 
-def _format_tensors_cs_1dim(fin_data, macro_data, tickers, lookback=None, pred_horizon=1, multistep=False, onlyprices=False, pred_target="return"):
+def _format_tensors_cs_1dim(fin_data, macro_data, tickers, lookback=None, pred_horizon=1, multistep=False, onlyprices=False, pred_target="return", umap_dim=None):
     if not lookback:
         lookback = pred_horizon * 2
     if multistep and pred_horizon == 1:
@@ -424,6 +433,7 @@ def _format_tensors_cs_1dim(fin_data, macro_data, tickers, lookback=None, pred_h
         else:
             features = fin_data.copy().filter(regex="_CP$", axis=1)
 
+        features = pd.DataFrame(scale(features.values), columns=features.columns, index=features.index)
         if multistep:
             for i in range(len(features) - lookback):
                 lookback_idx = i + lookback
@@ -471,11 +481,14 @@ def _format_tensors_cs_1dim(fin_data, macro_data, tickers, lookback=None, pred_h
                     f"{ticker}_LP",
                     f"{ticker}_HP",
                 ]
-            )  # Might make model worse but safety against any leakage (appears to actually improve performance)
+            ) # Might make model worse but safety against any leakage (appears to actually improve performance)
+            feature_dfs.append(feature_df)
+        
+        features = _create_timeseries_features(pd.concat([macro_data.copy()] + feature_dfs, axis=1))
+        features = pd.DataFrame(scale(features.values), columns=features.columns, index=features.index)
 
-        features = _create_timeseries_features(pd.concat([feature_dfs] + macro_data.copy(), axis=1))
-        return features, targets
-
+        if umap_dim:
+            features = UMAP(n_components=umap_dim).fit_transform(features)
 
         if multistep:
             for i in range(len(features) - lookback):
@@ -505,32 +518,15 @@ def _format_tensors_cs_1dim(fin_data, macro_data, tickers, lookback=None, pred_h
 
         X, y = np.array(X_sequences), np.array(y_sequences)
 
-        Xs.append(X)
-        ys.append(y)
-
     # Define split indices (since numpy differs from list slicing)
     test_split = -1
     val_split = (pred_horizon + 1) * -1
     train_split = (2 * pred_horizon) * -1
 
-    X_tens = np.stack(Xs)
-    X_tens = scale(X_tens.reshape(X_tens.shape[0], -1)).reshape(X_tens.shape)
-    y_tens = np.stack(ys)
+    X_train, X_val, X_test = X[:train_split], X[val_split], X[test_split]
+    y_train, y_val, y_test = y[:train_split], y[val_split], y[test_split]
 
-    # Give data shape of (n_samples, channels, timesteps, features)
-    X_tens = np.transpose(X_tens, (1, 0, 2, 3))
-    y_tens = np.transpose(y_tens.squeeze(), (1, 0))
-    
-    #return X_tens, y_tens
-    X_train, X_val, X_test = X_tens[:train_split], X_tens[val_split], X_tens[test_split]
-    y_train, y_val, y_test = y_tens[:train_split], y_tens[val_split], y_tens[test_split]
-
-    # Walk forward validation (validation is always the trained data + 1) ??????????????
-
-    X_val = X_val.reshape(1, X_val.shape[0], X_val.shape[1], X_val.shape[2])
-    X_test = X_test.reshape(1, X_test.shape[0], X_test.shape[1], X_test.shape[2])
-
-    y_val = y_val.reshape(1, -1)
-    y_test = y_test.reshape(1, -1)
+    X_val = X_val.reshape(1, X_val.shape[0], X_val.shape[1])
+    X_test = X_test.reshape(1, X_test.shape[0], X_test.shape[1])
 
     return X_train, X_val, X_test, y_train, y_val, y_test

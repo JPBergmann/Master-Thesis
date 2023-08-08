@@ -41,12 +41,34 @@ def main():
     PRED_HORIZON = 1
     MULTISTEP = False
     TRAIN_WORKERS = 0 # 0 fastest ...
+    CLUSTER = 0
 
     # data = CS_VID_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="monthly", resize=None, overwrite_cache=True, pred_target="return", train_workers=TRAIN_WORKERS)
-    data = CS_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="monthly", pred_target="price", overwrite_cache=True)
+    data = CS_DATAMODULE(batch_size=BATCH_SIZE, 
+                         lookback=LOOKBACK, 
+                         pred_horizon=PRED_HORIZON, 
+                         multistep=MULTISTEP, 
+                         data_type="monthly", 
+                         pred_target="price", 
+                         overwrite_cache=False, 
+                         cluster=CLUSTER)
     
+    data.prepare_data()
+    data.setup()
+
+    N_COMPANIES = int(len(data.tickers))
+    N_FEATURES = int(data.X_train_tensor.shape[-1])
+
     # model = ConvLSTM_AE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=1, hidden_dim=64) # Pred 1 not 21 since 1 Frame pred!!!!!! (only > 1 if data prep is multistep)
-    model = CNN_2D_LSTM(cnn_input_size=409, lstm_input_size=159*10, hidden_size=159*3, num_layers=1, output_size=409, lookback=LOOKBACK, dropout=0.2)
+    model = CNN_2D_LSTM(cnn_input_size=N_COMPANIES, 
+                        n_features=N_FEATURES, 
+                        hidden_size=N_FEATURES*3, 
+                        num_layers=2, 
+                        output_size=N_COMPANIES, 
+                        lookback=LOOKBACK, 
+                        dropout=0.2, 
+                        last_conv_size=10, 
+                        bidirectional=True)
     # model = CNN_1D_LSTM(cnn_input_size=409, lstm_input_size=159, hidden_size=128, num_layers=2, output_size=409, lookback=LOOKBACK, dropout=0)
     # compiled_model = torch.compile(model, mode="reduce-overhead", backend="aot_eager")
 
