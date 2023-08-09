@@ -12,7 +12,7 @@ from sklearn.metrics import (mean_absolute_error,
                              mean_squared_error, r2_score)
 from torch import mps, cuda
 
-from helpers.cross_sectorial import CS_DATAMODULE, CS_VID_DATAMODULE
+from helpers.cross_sectorial import CS_DATAMODULE_2D, CS_VID_DATAMODULE
 from models.cross_sectorial import (CNN_1D_LSTM, CNN_2D_LSTM, ConvLSTM_AE)
 
 
@@ -34,7 +34,7 @@ def main():
     # Set global seed for reproducibility in numpy, torch, scikit-learn
     pl.seed_everything(42)
 
-    LEARNING_RATE = 1e-4 # 1e-4 ind standard
+    LEARNING_RATE = 8e-4 # 1e-4 ind standard
     EPOCHS = 10_000
     BATCH_SIZE = 32
     LOOKBACK = 12
@@ -44,13 +44,13 @@ def main():
     CLUSTER = 0
 
     # data = CS_VID_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="monthly", resize=None, overwrite_cache=True, pred_target="return", train_workers=TRAIN_WORKERS)
-    data = CS_DATAMODULE(batch_size=BATCH_SIZE, 
+    data = CS_DATAMODULE_2D(batch_size=BATCH_SIZE, 
                          lookback=LOOKBACK, 
                          pred_horizon=PRED_HORIZON, 
                          multistep=MULTISTEP, 
                          data_type="monthly", 
                          pred_target="price", 
-                         overwrite_cache=False, 
+                         overwrite_cache=False,
                          cluster=CLUSTER)
     
     data.prepare_data()
@@ -62,13 +62,14 @@ def main():
     # model = ConvLSTM_AE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=1, hidden_dim=64) # Pred 1 not 21 since 1 Frame pred!!!!!! (only > 1 if data prep is multistep)
     model = CNN_2D_LSTM(cnn_input_size=N_COMPANIES, 
                         n_features=N_FEATURES, 
-                        hidden_size=N_FEATURES*3, 
-                        num_layers=2, 
+                        hidden_size=1028, 
+                        num_layers=1, 
                         output_size=N_COMPANIES, 
                         lookback=LOOKBACK, 
                         dropout=0.2, 
-                        last_conv_size=10, 
-                        bidirectional=True)
+                        reduced_channel=50, 
+                        bidirectional=True,
+                        lr=LEARNING_RATE)
     # model = CNN_1D_LSTM(cnn_input_size=409, lstm_input_size=159, hidden_size=128, num_layers=2, output_size=409, lookback=LOOKBACK, dropout=0)
     # compiled_model = torch.compile(model, mode="reduce-overhead", backend="aot_eager")
 

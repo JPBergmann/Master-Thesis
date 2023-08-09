@@ -5,6 +5,9 @@ import torch
 from pytorch_ranger import Ranger
 from torch import nn, optim
 
+from torch.nn.utils.rnn import PackedSequence
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
 ##############################################################################################
 ##############################################################################################
 ###################################### 1D CNN LSTM Model #####################################
@@ -98,7 +101,7 @@ class CNN_1D_LSTM(pl.LightningModule):
 
 
 class CNN_2D_LSTM(pl.LightningModule):
-    def __init__(self, cnn_input_size, n_features, hidden_size, num_layers, output_size, lookback, dropout, last_conv_size=1, bidirectional=False, lr=1e-3, reduction_factor=0.5):
+    def __init__(self, cnn_input_size, n_features, hidden_size, num_layers, output_size, lookback, dropout, reduced_channel=1, bidirectional=False, lr=1e-3):
         super().__init__()
 
         self.automatic_optimization = False
@@ -111,22 +114,35 @@ class CNN_2D_LSTM(pl.LightningModule):
         self.output_size = output_size
         self.lookback = lookback
         self.dropout = dropout
-        self.last_conv_size = last_conv_size
+        self.reduced_channel = reduced_channel
         self.bidirectional = bidirectional
         self.lr = lr
 
-        # Feature selection and dimensionality reduction using stacked 2D convolution layers
-        self.cnn = nn.Sequential(
+        # Feature projection which reduces the number of channels (best model still this and then lstm - although maybe should opt hyperparams and see)
+        self.projections = nn.Sequential(
             nn.Conv2d(in_channels=self.cnn_input_size, out_channels=self.cnn_input_size // 2, kernel_size=1),
             nn.ReLU(True),
             nn.BatchNorm2d(self.cnn_input_size//2),
-            nn.Conv2d(in_channels=self.cnn_input_size//2, out_channels=self.cnn_input_size, kernel_size=1),
+            nn.Dropout2d(self.dropout),
+            nn.Conv2d(in_channels=self.cnn_input_size//2, out_channels=self.reduced_channel, kernel_size=1),
             nn.ReLU(True),
         )
+        # Reduce the features dimension using 1D convolutions for each channel projection
+        self.conv1d_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(in_channels=self.n_features, out_channels=64, kernel_size=1),
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+                nn.Conv1d(in_channels=64, out_channels=32, kernel_size=1),
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+            )
+            for _ in range(reduced_channel)  # Create separate 1D convolution layers for each channel
+        ])
 
         # LSTM layer
         self.lstm = nn.LSTM(
-            input_size=self.n_features*self.last_conv_size,
+            input_size=32*self.reduced_channel,
             hidden_size=self.hidden_size,
             num_layers=self.num_layers,
             batch_first=True,
@@ -135,26 +151,33 @@ class CNN_2D_LSTM(pl.LightningModule):
         )
 
         # Fully connected layer
-        if self.bidirectional:
-            self.fc2 = nn.Sequential(
-                nn.Linear(self.hidden_size*2, self.output_size), # Bidirectional 2times output
-            )
-        else:
-            self.fc2 = nn.Sequential(
-                nn.Linear(self.hidden_size, self.output_size),
-            )
+        self.fc = nn.Sequential(
+            nn.Linear(self.hidden_size * (2 if self.bidirectional else 1), self.output_size),
+            nn.ReLU(),
+            nn.Dropout(self.dropout),  # Add dropout here
+        )
 
     def forward(self, x):
-        # CNN
-        out = self.cnn(x)
-        if self.last_conv_size > 1:
-            out = out.reshape(out.shape[0], self.lookback, -1)
-        else:
-            out = out.squeeze(1)
-        # LSTM
-        out, _ = self.lstm(out)
-        out = self.fc2(out[:, -1, :])
-        return out
+        # Feature Projections (Channel Pooling)
+        projected_x = self.projections(x)
+        conv_input = projected_x.permute(0, 1, 3, 2)  # Permute (batch, channel, features, seq_len)
+    
+        # Apply 1D convolutions to each channel
+        conv_features_list = []
+        for i, conv_layer in enumerate(self.conv1d_layers):
+            conv_channel = conv_input[:, i, :, :]  # Extract the i-th channel from the input
+            conv_features = conv_layer(conv_channel)  # Apply convolution to the channel
+            conv_features_list.append(conv_features)
+
+        conv_features = torch.cat(conv_features_list, dim=1)
+        conv_features = conv_features.permute(0, 2, 1)  # Permute (batch, seq_len, features)
+
+        # LSTM sequence modeling
+        lstm_output, _ = self.lstm(conv_features)
+        lstm_output = lstm_output[:, -1, :]  # Taking the last time step's output
+        
+        regression_output = self.fc(lstm_output)
+        return regression_output
 
     def training_step(self, batch, batch_idx):
         X, y = batch
