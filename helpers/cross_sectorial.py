@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torchvision.transforms.functional as TVF
-from sklearn.preprocessing import minmax_scale, scale, robust_scale
+from sklearn.preprocessing import minmax_scale, robust_scale, scale
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 from umap import UMAP
@@ -110,7 +110,9 @@ class CS_DATAMODULE_1D(pl.LightningDataModule):
                 lookback=self.lookback,
                 pred_horizon=self.pred_horizon,
                 multistep=self.multistep,
+                onlyprices=self.only_prices,
                 pred_target=self.pred_target,
+                umap_dim=self.umap_dim,
             )
 
             np.save(
@@ -263,17 +265,15 @@ class CS_DATAMODULE_2D(pl.LightningDataModule):
             os.makedirs("./cache/cs/cnn_lstm")
 
         possible_cache_files = [
-            f"./cache/cs/cnn_lstm/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/cs/cnn_lstm/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/cs/cnn_lstm/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/cs/cnn_lstm/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/cs/cnn_lstm/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/cs/cnn_lstm/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
+            f"./cache/cs/cnn_lstm/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
+            f"./cache/cs/cnn_lstm/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
+            f"./cache/cs/cnn_lstm/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
+            f"./cache/cs/cnn_lstm/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
+            f"./cache/cs/cnn_lstm/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
+            f"./cache/cs/cnn_lstm/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
         ]
 
-        if (all(os.path.exists(file) for file in possible_cache_files)) and (
-            not self.overwrite_cache
-        ):
+        if (all(os.path.exists(file) for file in possible_cache_files)) and (not self.overwrite_cache):
             pass
 
         else:
@@ -291,59 +291,59 @@ class CS_DATAMODULE_2D(pl.LightningDataModule):
             )
 
             np.save(
-                f"./cache/cs/cnn_lstm/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
+                f"./cache/cs/cnn_lstm/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
                 X_train,
             )
             np.save(
-                f"./cache/cs/cnn_lstm/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
+                f"./cache/cs/cnn_lstm/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
                 X_val,
             )
             np.save(
-                f"./cache/cs/cnn_lstm/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
+                f"./cache/cs/cnn_lstm/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
                 X_test,
             )
             np.save(
-                f"./cache/cs/cnn_lstm/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
+                f"./cache/cs/cnn_lstm/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
                 y_train,
             )
             np.save(
-                f"./cache/cs/cnn_lstm/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
+                f"./cache/cs/cnn_lstm/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
                 y_val,
             )
             np.save(
-                f"./cache/cs/cnn_lstm/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
+                f"./cache/cs/cnn_lstm/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy",
                 y_test,
             )
 
     def setup(self, stage=None):
         self.X_train_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/cnn_lstm/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy"
+                f"./cache/cs/cnn_lstm/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy"
             )
         ).float()
         self.X_val_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/cnn_lstm/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy"
+                f"./cache/cs/cnn_lstm/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy"
             )
         ).float()
         self.X_test_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/cnn_lstm/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy"
+                f"./cache/cs/cnn_lstm/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy"
             )
         ).float()
         self.y_train_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/cnn_lstm/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy"
+                f"./cache/cs/cnn_lstm/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy"
             )
         ).float()
         self.y_val_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/cnn_lstm/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy"
+                f"./cache/cs/cnn_lstm/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy"
             )
         ).float()
         self.y_test_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/cnn_lstm/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy"
+                f"./cache/cs/cnn_lstm/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_cluster{self.cluster}.npy"
             )
         ).float()
 
@@ -417,12 +417,10 @@ class CS_VID_DATAMODULE(pl.LightningDataModule):
         if data_type == "monthly":
             self.fin_path = "./DATA/Monthly/Processed/month_data_fin_tec.parquet"
             self.macro_path = "./DATA/Monthly/Processed/month_data_macro_USCA.parquet"
-            self.tickers_path = "./DATA/Tickers/month_tickers_clean.txt"
 
         elif data_type == "daily":
             self.fin_path = "./DATA/Daily/Processed/day_data_fin_tec.parquet"
             self.macro_path = "./DATA/Daily/Processed/day_data_macro_USCA.parquet"
-            self.tickers_path = "./DATA/Tickers/day_tickers_clean.txt"
 
     def prepare_data(self):
         if not os.path.exists("./cache/cs/convlstm_ae"):
@@ -437,16 +435,11 @@ class CS_VID_DATAMODULE(pl.LightningDataModule):
             f"./cache/cs/convlstm_ae/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
         ]
 
-        if (all(os.path.exists(file) for file in possible_cache_files)) and (
-            not self.overwrite_cache
-        ):
+        if (all(os.path.exists(file) for file in possible_cache_files)) and (not self.overwrite_cache):
             pass
 
         else:
             fin = pd.read_parquet(self.fin_path)
-            # macro = pd.read_parquet(self.macro_path)
-            # with open(self.tickers_path, "r") as f:
-            #     tickers = f.read().strip().split("\n")
 
             X_train, X_val, X_test, y_train, y_val, y_test = _format_tensors_cs_vid(
                 fin_data=fin,
@@ -566,34 +559,24 @@ def _format_tensors_cs_vid(
         raise ValueError("Multistep only applicable for pred_horizon > 1")
 
     if pred_target == "return":
-        returns = (
-            fin_data.copy().filter(regex="_CP$", axis=1).pct_change(pred_horizon) * 100
-        ).iloc[
-            pred_horizon:, :9
-        ]  # Returns in percentage (since values > 1 needed to turn into pixels)
-        returns = returns.replace([np.inf, -np.inf], np.nan).fillna(
-            0
-        )  # Missing values set to 0
+        returns = (fin_data.copy().filter(regex="_CP$", axis=1).pct_change(pred_horizon) * 100).iloc[pred_horizon:, :400]  # Returns in percentage (since values > 1 needed to turn into pixels)
+        returns = returns.replace([np.inf, -np.inf], np.nan).fillna(0)  # Missing values set to 0
 
     else:
-        returns = (
-            fin_data.copy().filter(regex="_CP$", axis=1).iloc[:, :400]
-        )  # Actual prices
-        returns = returns.replace([np.inf, -np.inf], np.nan).fillna(
-            0
-        )  # Missing values set to 0
+        returns = (fin_data.copy().filter(regex="_CP$", axis=1).iloc[:, :400])  # Actual prices
+        returns = returns.replace([np.inf, -np.inf], np.nan).fillna(0)  # Missing values set to 0
 
     # Turn each timestep into a picture (20x20 pixels) of returns (0-255) - 0 is black, 255 is white - 0 is lowest return, 255 is highest return
     features = []
     for i in tqdm(range(len(returns)), desc="Converting returns into video sequences"):
-        timestep = returns.iloc[i, :].values  # Scale each img seperately?
-        img = (torch.from_numpy(timestep).float().sigmoid() * 255).reshape(3, 3)
+        timestep = returns.iloc[i, :].values
+        img = (torch.from_numpy(timestep).float().sigmoid() * 255).reshape(20, 20)
         if resize:
             img = TVF.resize(img.unsqueeze(dim=0), resize, antialias=True).squeeze()
 
         features.append(img / 255)  # scale to 0-1
 
-    features = torch.stack(features)
+    features = torch.stack(features).numpy()
     X_sequences, y_sequences = [], []
 
     if multistep:
@@ -622,49 +605,29 @@ def _format_tensors_cs_vid(
             X_sequences.append(X_seq)
             y_sequences.append(y_seq)
 
-    X, y = torch.stack(X_sequences), torch.stack(y_sequences)
+    X, y = np.stack(X_sequences), np.stack(y_sequences)
 
-    X = X.reshape(
-        X.shape[0], X.shape[1], 1, X.shape[2], X.shape[3]
-    )  # Add channel dimension (1 since grayscale)
+    X = X.reshape(X.shape[0], X.shape[1], 1, X.shape[2], X.shape[3])  # Add channel dimension (1 since grayscale)
 
     if multistep:
-        y = y.reshape(
-            y.shape[0], y.shape[1], 1, y.shape[2], y.shape[3]
-        )  # Add channel dimension (1 since grayscale)
+        y = y.reshape(y.shape[0], y.shape[1], 1, y.shape[2], y.shape[3])  # Add channel dimension (1 since grayscale)
     else:
-        y = y.reshape(
-            y.shape[0], 1, y.shape[1], y.shape[2]
-        )  # Add channel dimension (1 since grayscale)
+        y = y.reshape(y.shape[0], 1, y.shape[1], y.shape[2])  # Add channel dimension (1 since grayscale)
 
     # Define split indices (since numpy differs from list slicing)
     test_split = -1
     val_split = (pred_horizon + 1) * -1
     train_split = (2 * pred_horizon) * -1
 
-    # train_split_idx = int(len(X) * 0.8)
-    # val_split_idx = int(len(X) * 0.95)
-
-    # X_train, X_val, X_test = X[:train_split_idx], X[train_split_idx:val_split_idx], X[val_split_idx:]
-    # y_train, y_val, y_test = y[:train_split_idx], y[train_split_idx:val_split_idx], y[val_split_idx:]
-
     X_train, X_val, X_test = X[:train_split], X[val_split], X[test_split]
     y_train, y_val, y_test = y[:train_split], y[val_split], y[test_split]
 
-    X_val = X_val.reshape(
-        1, X_val.shape[0], X_val.shape[1], X_val.shape[2], X_val.shape[3]
-    )
-    X_test = X_test.reshape(
-        1, X_test.shape[0], X_test.shape[1], X_test.shape[2], X_val.shape[3]
-    )
+    X_val = X_val.reshape(1, X_val.shape[0], X_val.shape[1], X_val.shape[2], X_val.shape[3])
+    X_test = X_test.reshape(1, X_test.shape[0], X_test.shape[1], X_test.shape[2], X_val.shape[3])
 
     if multistep:
-        y_val = y_val.reshape(
-            1, y_val.shape[0], y_val.shape[1], y_val.shape[2], y_val.shape[3]
-        )
-        y_test = y_test.reshape(
-            1, y_test.shape[0], y_test.shape[1], y_test.shape[2], y_val.shape[3]
-        )
+        y_val = y_val.reshape(1, y_val.shape[0], y_val.shape[1], y_val.shape[2], y_val.shape[3])
+        y_test = y_test.reshape(1, y_test.shape[0], y_test.shape[1], y_test.shape[2], y_val.shape[3])
     else:
         y_val = y_val.reshape(1, y_val.shape[0], y_val.shape[1], y_val.shape[2])
         y_test = y_test.reshape(1, y_test.shape[0], y_test.shape[1], y_test.shape[2])
@@ -690,33 +653,28 @@ def _format_tensors_cs_2D(
     ys = []
 
     for ticker in tqdm(tickers, desc="Preparing Tensors"):
-        fin_df = _create_timeseries_features(
-            fin_data.copy().filter(regex=f"^{ticker}_")
-        )
+        fin_df = _create_timeseries_features(fin_data.copy().filter(regex=f"^{ticker}_"))
         macro_df = macro_data.copy()
 
         features = pd.concat([fin_df, macro_df], axis=1)
-        features.loc[
-            ~(features[f"{ticker}_CP"] > 0), features.columns
-        ] = 0  # Make all rows where the target is 0 also 0
+        features.loc[~(features[f"{ticker}_CP"] > 0), features.columns] = 0  # Make all rows where the target is 0 also 0
         if pred_target == "return":
-            target = (
-                features.filter(regex=f"{ticker}_CP").pct_change(pred_horizon) * 100
-            ).iloc[pred_horizon:, :]
+            target = (features.filter(regex=f"{ticker}_CP").pct_change(pred_horizon) * 100).iloc[pred_horizon:, :]
             target = target.replace([np.inf, -np.inf], np.nan).fillna(0)
             features = features.iloc[pred_horizon:, :]
         else:
             target = features.filter(regex=f"{ticker}_CP")
-        # features = features.drop(
-        #     columns=[
-        #         f"{ticker}_CP",
-        #         f"{ticker}_OP",
-        #         f"{ticker}_VOL",
-        #         f"{ticker}_OP",
-        #         f"{ticker}_LP",
-        #         f"{ticker}_HP",
-        #     ]
-        # )  # Might make model worse but safety against any leakage (appears to actually improve performance)
+
+        features = features.drop(
+            columns=[
+                f"{ticker}_CP",
+                f"{ticker}_OP",
+                f"{ticker}_VOL",
+                f"{ticker}_OP",
+                f"{ticker}_LP",
+                f"{ticker}_HP",
+            ]
+        )  # Might make model worse but safety against any leakage (appears to actually improve performance)
 
         X_sequences, y_sequences = [], []
 
@@ -757,28 +715,31 @@ def _format_tensors_cs_2D(
     train_split = (2 * pred_horizon) * -1
 
     X_tens = np.stack(Xs)
-    X_tens = scale(X_tens.reshape(X_tens.shape[0], -1)).reshape(
-        X_tens.shape
-    )  # TODO: make scalers hyperparam
+    X_tens = scale(X_tens.reshape(X_tens.shape[0], -1)).reshape(X_tens.shape)  # TODO: make scalers hyperparam
     y_tens = np.stack(ys)
 
     # Give data shape of (n_samples, channels, timesteps, features)
     X_tens = np.transpose(X_tens, (1, 0, 2, 3))
-    y_tens = np.transpose(y_tens.squeeze(), (1, 0))
+    if multistep:
+        y_tens = np.transpose(y_tens.squeeze(), (1, 0, 2))
+    else:
+        y_tens = np.transpose(y_tens.squeeze(), (1, 0))
 
-    # return X_tens, y_tens
     X_train, X_val, X_test = X_tens[:train_split], X_tens[val_split], X_tens[test_split]
     y_train, y_val, y_test = y_tens[:train_split], y_tens[val_split], y_tens[test_split]
-
-    # Walk forward validation (validation is always the trained data + 1) ??????????????
 
     X_val = X_val.reshape(1, X_val.shape[0], X_val.shape[1], X_val.shape[2])
     X_test = X_test.reshape(1, X_test.shape[0], X_test.shape[1], X_test.shape[2])
 
-    y_val = y_val.reshape(1, -1)
-    y_test = y_test.reshape(1, -1)
+    if multistep:
+        y_val = y_val.reshape(1, y_val.shape[0], y_val.shape[1])
+        y_test = y_test.reshape(1, y_test.shape[0], y_test.shape[1])
+    else:
+        y_val = y_val.reshape(1, y_val.shape[0])
+        y_test = y_test.reshape(1, y_test.shape[0])
 
     return X_train, X_val, X_test, y_train, y_val, y_test
+
 
 
 def _format_tensors_cs_1D(
@@ -794,31 +755,22 @@ def _format_tensors_cs_1D(
 ):
     if not lookback:
         lookback = pred_horizon * 2
-    if multistep and pred_horizon == 1:
+    if multistep and (pred_horizon == 1):
         raise ValueError("Multistep only applicable for pred_horizon > 1")
     if onlyprices and (umap_dim is not None):
-        print("UMAP dimension ignored since only prices are used")
+        print("Skipping UMAP dimensionality reduction since only prices are used")
         umap_dim = None
 
     X_sequences, y_sequences = [], []
 
     if onlyprices:
         if pred_target == "return":
-            returns = (
-                fin_data.copy().filter(regex="_CP$", axis=1).pct_change(pred_horizon)
-                * 100
-            ).iloc[
-                pred_horizon:, :
-            ]  # Returns in percentage (since values > 1 needed to turn into pixels)
-            features = returns.replace([np.inf, -np.inf], np.nan).fillna(
-                0
-            )  # Missing values set to 0
+            returns = (fin_data.copy().filter(regex="_CP$", axis=1).pct_change(pred_horizon) * 100).iloc[pred_horizon:, :]  # Returns in percentage (since values > 1 needed to turn into pixels)
+            features = returns.replace([np.inf, -np.inf], np.nan).fillna(0)  # Missing values set to 0
         else:
             features = fin_data.copy().filter(regex="_CP$", axis=1)
 
-        features = pd.DataFrame(
-            scale(features.values), columns=features.columns, index=features.index
-        )
+        features = pd.DataFrame(scale(features.values), columns=features.columns, index=features.index)
         if multistep:
             for i in range(len(features) - lookback):
                 lookback_idx = i + lookback
@@ -850,9 +802,7 @@ def _format_tensors_cs_1D(
         targets = pd.DataFrame()
         for ticker in tqdm(tickers, desc="Preparing Tensors"):
             feature_df = fin_data.copy().filter(regex=f"^{ticker}_")
-            feature_df.loc[
-                ~(feature_df[f"{ticker}_CP"] > 0), feature_df.columns
-            ] = 0  # Make all rows where the target is 0 also 0
+            feature_df.loc[~(feature_df[f"{ticker}_CP"] > 0), feature_df.columns] = 0  # Make all rows where the target is 0 also 0
             target = feature_df.filter(regex=f"{ticker}_CP")
             targets[f"y_{ticker}"] = target
             feature_df = feature_df.drop(
@@ -865,18 +815,18 @@ def _format_tensors_cs_1D(
                     f"{ticker}_HP",
                 ]
             )  # Might make model worse but safety against any leakage (appears to actually improve performance)
+            feature_df = scale(feature_df.values)
+            if (umap_dim is not None) and (umap_dim <= 100):
+                feature_df = UMAP(n_components=umap_dim).fit_transform(feature_df)
             feature_dfs.append(feature_df)
-
-        features = _create_timeseries_features(
-            pd.concat([macro_data.copy()] + feature_dfs, axis=1)
-        )
-        features = scale(features.values)
+        
+        features = np.concatenate(feature_dfs, axis=1)
+        # features = _create_timeseries_features(pd.concat([macro_data.copy()] + feature_dfs, axis=1))
+        # features = scale(features.values)
         targets = targets.values
 
-        if (umap_dim) and (umap_dim <= 100):
-            features = UMAP(n_components=umap_dim).fit_transform(features)
-        else:
-            raise ValueError("UMAP dimension must be <= 100")
+        #if (umap_dim is not None) and (umap_dim <= 100):
+            #features = UMAP(n_components=umap_dim).fit_transform(features) # Change and reduce features of each company? (can add corr removal for each comp?)
 
         if multistep:
             for i in range(len(features) - lookback):
@@ -916,5 +866,12 @@ def _format_tensors_cs_1D(
 
     X_val = X_val.reshape(1, X_val.shape[0], X_val.shape[1])
     X_test = X_test.reshape(1, X_test.shape[0], X_test.shape[1])
+
+    if multistep:
+        y_val = y_val.reshape(1, y_val.shape[0], y_val.shape[1])
+        y_test = y_test.reshape(1, y_test.shape[0], y_test.shape[1])
+    else:
+        y_val = y_val.reshape(1, -1) # Replace with unsqueeze
+        y_test = y_test.reshape(1, -1)
 
     return X_train, X_val, X_test, y_train, y_val, y_test

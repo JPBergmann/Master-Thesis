@@ -1,12 +1,17 @@
 from typing import Any
 
 import lightning.pytorch as pl
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
+from matplotlib.lines import Line2D
 from pytorch_ranger import Ranger
+from ranger21 import Ranger21
 from torch import nn, optim
+from torch.nn.utils.rnn import (PackedSequence, pack_padded_sequence,
+                                pad_packed_sequence)
 
-from torch.nn.utils.rnn import PackedSequence
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+import wandb
 
 ##############################################################################################
 ##############################################################################################
@@ -16,7 +21,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
 class CNN_1D_LSTM(pl.LightningModule):
-    def __init__(self, cnn_input_size, lstm_input_size, hidden_size, num_layers, output_size, lookback, dropout, last_conv_size=10, lr=1e-3):
+    def __init__(self, cnn_input_size, lstm_input_size, hidden_size, num_layers, output_size, lookback, dropout, last_conv_size=10, lr=1e-3, optimizer=Ranger):
         super().__init__()
 
         self.automatic_optimization = False
@@ -31,16 +36,14 @@ class CNN_1D_LSTM(pl.LightningModule):
         self.dropout = dropout
         self.last_conv_size = last_conv_size
         self.lr = lr
+        self.optimizer = optimizer
 
-        # Feature selection and dimensionality reduction using stacked 2D convolution layers that ultimately result in only 1 channel
+        # Feature selection and dimensionality reduction
         self.cnn = nn.Sequential(
-            nn.Conv1d(in_channels=self.cnn_input_size, out_channels=32, kernel_size=3, stride=1, padding=1),
+            nn.Conv1d(in_channels=self.cnn_input_size, out_channels=self.cnn_input_size//2, kernel_size=1),
             nn.ReLU(),
-            nn.MaxPool1d(kernel_size=2, stride=2),
-            nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
+            nn.Conv1d(in_channels=self.cnn_input_size//2, out_channels=self.lstm_input_size, kernel_size=1),
             nn.ReLU(),
-            nn.MaxPool1d(kernel_size=2, stride=2),
-            nn.Flatten(),
         )
 
         # LSTM layer
@@ -60,8 +63,9 @@ class CNN_1D_LSTM(pl.LightningModule):
 
     def forward(self, x):
         # CNN
+        x = x.permute(0, 2, 1)
         out = self.cnn(x)
-        out = out.reshape(out.shape[0], self.lookback, -1)
+        out = out.permute(0, 2, 1)
         # # # # LSTM
         out, _ = self.lstm(out)
         out = self.fc2(out[:, -1, :])
@@ -89,7 +93,7 @@ class CNN_1D_LSTM(pl.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        optimizer = Ranger(self.parameters(), lr=self.lr)
+        optimizer = self.optimizer(self.parameters(), lr=self.lr)
         return optimizer
     
 
@@ -137,7 +141,7 @@ class CNN_2D_LSTM(pl.LightningModule):
                 nn.ReLU(True),
                 nn.Dropout(self.dropout),
             )
-            for _ in range(reduced_channel)  # Create separate 1D convolution layers for each channel
+            for _ in range(self.reduced_channel)  # Create separate 1D convolution layers for each channel
         ])
 
         # LSTM layer
@@ -203,6 +207,122 @@ class CNN_2D_LSTM(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = Ranger(self.parameters(), lr=self.lr)
         return optimizer
+    
+
+##############################################################################################
+##############################################################################################
+################################ Multihead 1D CNN LSTM Model #################################
+##############################################################################################
+##############################################################################################
+
+
+class MH_CNN_1D_LSTM(pl.LightningModule):
+    def __init__(self, cnn_input_size, n_features, hidden_size, num_layers, output_size, lookback, dropout, epochs, batches_p_epoch, reduced_features=2, bidirectional=False, lr=1e-3, reduction_factor=0.5):
+        super().__init__()
+
+        self.automatic_optimization = False
+        self.save_hyperparameters()
+        
+        self.cnn_input_size = cnn_input_size
+        self.n_features = n_features
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.output_size = output_size
+        self.lookback = lookback
+        self.dropout = dropout
+        self.reduced_features = reduced_features
+        self.bidirectional = bidirectional
+        self.lr = lr
+        self.epochs = epochs
+        self.batches_p_epoch = batches_p_epoch
+
+        # Feature selection and dimensionality reduction using 1D convolution layers on each channel
+        self.conv1d_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(in_channels=self.n_features, out_channels=64, kernel_size=1),
+                nn.BatchNorm1d(64),
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+                nn.Conv1d(in_channels=64, out_channels=self.reduced_features, kernel_size=1),
+                nn.BatchNorm1d(self.reduced_features),
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+            )
+            for _ in range(self.cnn_input_size)  # Create separate 1D convolution layers for each channel
+        ])
+
+        # LSTM layer
+        self.lstm = nn.LSTM(
+            input_size=self.cnn_input_size * self.reduced_features,
+            hidden_size=self.hidden_size,
+            num_layers=self.num_layers,
+            batch_first=True,
+            dropout=0,  # Add dropout only after lstm layer for regularization
+            bidirectional=self.bidirectional,
+        )
+
+        # Fully connected layer
+        if self.bidirectional:
+            self.fc = nn.Sequential(
+                nn.Dropout(self.dropout),
+                nn.Linear(self.hidden_size * 2, self.hidden_size), # Bidirectional 2times output
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+                nn.Linear(self.hidden_size, self.output_size),
+            )
+        else:
+            self.fc = nn.Sequential(
+                nn.Dropout(self.dropout),
+                nn.Linear(self.hidden_size, self.hidden_size),
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+                nn.Linear(self.hidden_size, self.output_size),
+            )
+
+    def forward(self, x):
+        # 1D convolution on each channel to reduce dimensionality
+        x = x.permute(0, 1, 3, 2)  # Permute (batch, channel, features, seq_len)
+        conv_features_list = []
+        for i, conv_layer in enumerate(self.conv1d_layers):
+            conv_channel = x[:, i, :, :]  # Extract the i-th channel from the input
+            conv_features = conv_layer(conv_channel)  # Apply convolution to the channel
+            conv_features_list.append(conv_features)
+
+        conv_features = torch.cat(conv_features_list, dim=1)
+        conv_features = conv_features.permute(0, 2, 1)  # Permute (batch, seq_len, features)
+
+        # LSTM
+        lstm_output, _ = self.lstm(conv_features)
+        lstm_output = lstm_output[:, -1, :]
+
+        # FC
+        out = self.fc(lstm_output)
+        return out
+
+    def training_step(self, batch, batch_idx):
+        X, y = batch
+        y_hat = self.forward(X)
+        loss = nn.functional.mse_loss(y_hat, y)
+        self.log("train_loss", loss, prog_bar=True)
+    
+        # Ranger requires manual backward pass since it is designed/executed differently to base torch optimizers (Ranger doesnt work with torch compile)
+        optimizer = self.optimizers()
+        optimizer.zero_grad()
+        self.manual_backward(loss)
+        optimizer.step()
+
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        X, y = batch
+        y_hat = self.forward(X)
+        loss = nn.functional.mse_loss(y_hat, y)
+        self.log("val_loss", loss, prog_bar=True)
+        return loss
+    
+    def configure_optimizers(self):
+        optimizer = Ranger21(self.parameters(), lr=self.lr, num_epochs=self.epochs, num_batches_per_epoch=self.batches_p_epoch)
+        return optimizer
 
 
 ##############################################################################################
@@ -210,6 +330,36 @@ class CNN_2D_LSTM(pl.LightningModule):
 ########################################### ConvLSTM AE ######################################
 ##############################################################################################
 ##############################################################################################
+
+def plot_grad_flow(named_parameters):
+    '''Plots the gradients flowing through different layers in the net during training.
+    Can be used for checking for possible gradient vanishing / exploding problems.
+    
+    Usage: Plug this function in Trainer class after loss.backwards() as 
+    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
+    ave_grads = []
+    max_grads= []
+    layers = []
+    for n, p in named_parameters:
+        if(p.requires_grad) and ("bias" not in n):
+            layers.append(n)
+            ave_grads.append(p.grad.abs().mean())
+            max_grads.append(p.grad.abs().max())
+    plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
+    plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
+    plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
+    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+    plt.xlim(left=0, right=len(ave_grads))
+    plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
+    plt.xlabel("Layers")
+    plt.ylabel("average gradient")
+    plt.title("Gradient flow")
+    plt.grid(True)
+    plt.legend([Line2D([0], [0], color="c", lw=4),
+                Line2D([0], [0], color="b", lw=4),
+                Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
+    return plt
+    
 
 class ConvLSTMCell(nn.Module):
 
@@ -360,7 +510,7 @@ class EncoderDecoderConvLSTM(nn.Module):
 
 
 class ConvLSTM_AE(pl.LightningModule):
-    def __init__(self, batch_size, lookback, pred_horizon, hidden_dim=64, lr=1e-4):
+    def __init__(self, batch_size, lookback, pred_horizon, epochs, batches_p_epoch, hidden_dim=64, lr=1e-4,):
         super().__init__()
 
         self.automatic_optimization = False
@@ -373,6 +523,8 @@ class ConvLSTM_AE(pl.LightningModule):
         self.pred_horizon = pred_horizon
         self.hidden_dim = hidden_dim
         self.lr = lr
+        self.epochs = epochs
+        self.batches_p_epoch = batches_p_epoch
         self.model = EncoderDecoderConvLSTM(nf=self.hidden_dim, in_chan=1)
 
 
@@ -395,11 +547,13 @@ class ConvLSTM_AE(pl.LightningModule):
         optimizer = self.optimizers()
         optimizer.zero_grad()
         self.manual_backward(loss)
+        torch.nn.utils.clip_grad_norm_(self.parameters(), 0.3)
+        chart = plot_grad_flow(self.named_parameters())
+        wandb.log({"grad_flow": wandb.Image(chart)})
         optimizer.step()
 
         # sch = self.lr_schedulers()
-        # if self.trainer.is_last_batch and (self.trainer.current_epoch + 1) % 50 == 0:
-        #    sch.step()
+        # sch.step()
 
         return loss
 
@@ -415,6 +569,6 @@ class ConvLSTM_AE(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        optimizer = Ranger(self.parameters(), lr=self.lr)
-        # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, verbose=True)
-        return [optimizer]#, [scheduler]
+        optimizer = Ranger21(self.parameters(), lr=self.lr, num_epochs=self.epochs, num_batches_per_epoch=self.batches_p_epoch)
+        scheduler = optim.lr_scheduler.CyclicLR(optimizer, base_lr=self.lr, max_lr=1e-2)
+        return optimizer
