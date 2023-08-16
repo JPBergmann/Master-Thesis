@@ -37,7 +37,7 @@ class LSTM(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X)#.squeeze(1)
-        loss = nn.functional.mse_loss(y_hat, y)
+        loss = self.loss(y_hat, y)
         self.log("train_loss", loss, prog_bar=True)
     
         # Ranger requires manual backward pass since it is designed/executed differently to base torch optimizers
@@ -51,7 +51,7 @@ class LSTM(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X).squeeze(1)
-        loss = nn.functional.mse_loss(y_hat, y)
+        loss = self.loss(y_hat, y)
         self.log("val_loss", loss, prog_bar=True)
         return loss
     

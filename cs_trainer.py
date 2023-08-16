@@ -80,7 +80,7 @@ def main():
                         lookback=LOOKBACK, 
                         dropout=0,
                         reduced_features=4, 
-                        bidirectional=False,
+                        bidirectional=True,
                         lr=LEARNING_RATE,
                         epochs=EPOCHS,
                         batches_p_epoch=N_BATCHES,)

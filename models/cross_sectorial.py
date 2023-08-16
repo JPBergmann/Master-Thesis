@@ -8,10 +8,93 @@ from matplotlib.lines import Line2D
 from pytorch_ranger import Ranger
 from ranger21 import Ranger21
 from torch import nn, optim
-from torch.nn.utils.rnn import (PackedSequence, pack_padded_sequence,
-                                pad_packed_sequence)
-
 import wandb
+
+##############################################################################################
+##############################################################################################
+######################################## Vanilla LSTM ########################################
+##############################################################################################
+##############################################################################################
+
+
+class LSTM(pl.LightningModule):
+    def __init__(self, 
+                 n_companies,
+                 n_features,
+                 lookback,
+                 epochs,
+                 batches_p_epoch,
+                 lstm_layers=2, 
+                 lstm_nodes=64, 
+                 fc_layers=1,
+                 fc_nodes=64,
+                 dropout=0, 
+                 bidirectional=True,
+                 lr=1e-3, 
+                 optimizer=Ranger21):
+        
+        super().__init__()
+
+        self.automatic_optimization = False
+        self.save_hyperparameters()
+
+        self.n_companies = n_companies
+        self.n_features = n_features
+        self.lookback = lookback
+        self.epochs = epochs
+        self.batches_p_epoch = batches_p_epoch
+        self.lstm_layers = lstm_layers
+        self.lstm_nodes = lstm_nodes
+        self.fc_layers = fc_layers
+        self.fc_nodes = fc_nodes
+        self.dropout = dropout
+        self.bidirectional = bidirectional
+        self.lr = lr
+        self.optimizer = optimizer
+
+        self.lstm = nn.LSTM(input_size=self.n_features, hidden_size=self.lstm_nodes, num_layers=self.lstm_layers, batch_first=True, dropout=0, bidirectional=self.bidirectional)
+        # Depending on the number of layers, we need to add more layers to the fully connected part
+        lin_layers = []
+        for i in range(self.fc_layers):
+            lin_layers.append(nn.Linear(self.fc_nodes, self.fc_nodes))
+            lin_layers.append(nn.ReLU())
+            lin_layers.append(nn.Dropout(dropout))
+
+        self.fc = nn.Sequential(*lin_layers, nn.Linear(self.fc_nodes, self.n_companies))
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        out = self.fc(out[:, -1, :])
+        return out
+
+    def training_step(self, batch, batch_idx):
+        X, y = batch
+        y_hat = self.forward(X)
+        loss = self.loss(y_hat, y)
+        self.log("train_loss", loss, prog_bar=True)
+    
+        # Ranger requires manual backward pass to get along with lightning (also, Ranger doesnt work with torch compile)
+        optimizer = self.optimizers()
+        optimizer.zero_grad()
+        self.manual_backward(loss)
+        optimizer.step()
+
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        X, y = batch
+        y_hat = self.forward(X).squeeze(1)
+        loss = self.loss(y_hat, y)
+        self.log("val_loss", loss, prog_bar=True)
+        return loss
+    
+    def configure_optimizers(self):
+        if self.optimizer == Ranger21:
+            optimizer = self.optimizer(self.parameters(), lr=self.lr, num_epochs=self.epochs, num_batches_per_epoch=self.batches_p_epoch)
+        else:
+            optimizer = self.optimizer(self.parameters(), lr=self.lr)
+        return optimizer
+    
 
 ##############################################################################################
 ##############################################################################################
@@ -21,7 +104,18 @@ import wandb
 
 
 class CNN_1D_LSTM(pl.LightningModule):
-    def __init__(self, cnn_input_size, lstm_input_size, hidden_size, num_layers, output_size, lookback, dropout, last_conv_size=10, lr=1e-3, optimizer=Ranger):
+    def __init__(self, 
+                 cnn_input_size, 
+                 output_size,
+                 lookback,
+                 lstm_size=64, 
+                 lstm_layers=2, 
+                 dropout=0, 
+                 bidirectional=True, 
+                 last_conv_size=10, 
+                 lr=1e-3, 
+                 optimizer=Ranger21):
+        
         super().__init__()
 
         self.automatic_optimization = False
@@ -37,14 +131,22 @@ class CNN_1D_LSTM(pl.LightningModule):
         self.last_conv_size = last_conv_size
         self.lr = lr
         self.optimizer = optimizer
+        self.bidirectional = bidirectional
 
-        # Feature selection and dimensionality reduction
+        # Feature selection and dimensionality reduction using 1D convolutions with kernel size 1 (how many layers controlled by last_conv_size)
         self.cnn = nn.Sequential(
-            nn.Conv1d(in_channels=self.cnn_input_size, out_channels=self.cnn_input_size//2, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv1d(in_channels=self.cnn_input_size//2, out_channels=self.lstm_input_size, kernel_size=1),
-            nn.ReLU(),
+            nn.Conv1d(in_channels=self.cnn_input_size, out_channels=64, kernel_size=1),
+            nn.ReLU(True),
+            nn.BatchNorm1d(64),
+            nn.Dropout(self.dropout),
+            nn.Conv1d(in_channels=64, out_channels=32, kernel_size=1),
+            nn.ReLU(True),
+            nn.BatchNorm1d(32),
+            nn.Dropout(self.dropout),
+            nn.Conv1d(in_channels=32, out_channels=self.last_conv_size, kernel_size=1),
+            nn.ReLU(True),
         )
+
 
         # LSTM layer
         self.lstm = nn.LSTM(
@@ -52,13 +154,13 @@ class CNN_1D_LSTM(pl.LightningModule):
             hidden_size=self.hidden_size,
             num_layers=self.num_layers,
             batch_first=True,
-            dropout=0,  # Add dropout layer for regularization
-            bidirectional=False,
+            dropout=0,
+            bidirectional= self.bidirectional
         )
 
         # Fully connected layer
         self.fc2 = nn.Sequential(
-            nn.Linear(self.hidden_size, self.output_size),
+            nn.Linear(self.hidden_size * (2 if self.bidirectional else 1), self.output_size),
         )
 
     def forward(self, x):
@@ -77,7 +179,7 @@ class CNN_1D_LSTM(pl.LightningModule):
         loss = nn.functional.mse_loss(y_hat, y)
         self.log("train_loss", loss, prog_bar=True)
     
-        # Ranger requires manual backward pass since it is designed/executed differently to base torch optimizers (Ranger doesnt work with torch compile)
+        # Ranger requires manual backward pass to get along with lightning (also, Ranger doesnt work with torch compile)
         optimizer = self.optimizers()
         optimizer.zero_grad()
         self.manual_backward(loss)
@@ -93,7 +195,10 @@ class CNN_1D_LSTM(pl.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        optimizer = self.optimizer(self.parameters(), lr=self.lr)
+        if self.optimizer == Ranger21:
+            optimizer = self.optimizer(self.parameters(), lr=self.lr, num_epochs=self.epochs, num_batches_per_epoch=self.batches_p_epoch)
+        else:
+            optimizer = self.optimizer(self.parameters(), lr=self.lr)
         return optimizer
     
 
@@ -322,253 +427,4 @@ class MH_CNN_1D_LSTM(pl.LightningModule):
     
     def configure_optimizers(self):
         optimizer = Ranger21(self.parameters(), lr=self.lr, num_epochs=self.epochs, num_batches_per_epoch=self.batches_p_epoch)
-        return optimizer
-
-
-##############################################################################################
-##############################################################################################
-########################################### ConvLSTM AE ######################################
-##############################################################################################
-##############################################################################################
-
-def plot_grad_flow(named_parameters):
-    '''Plots the gradients flowing through different layers in the net during training.
-    Can be used for checking for possible gradient vanishing / exploding problems.
-    
-    Usage: Plug this function in Trainer class after loss.backwards() as 
-    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
-    ave_grads = []
-    max_grads= []
-    layers = []
-    for n, p in named_parameters:
-        if(p.requires_grad) and ("bias" not in n):
-            layers.append(n)
-            ave_grads.append(p.grad.abs().mean())
-            max_grads.append(p.grad.abs().max())
-    plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
-    plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
-    plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
-    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
-    plt.xlim(left=0, right=len(ave_grads))
-    plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
-    plt.xlabel("Layers")
-    plt.ylabel("average gradient")
-    plt.title("Gradient flow")
-    plt.grid(True)
-    plt.legend([Line2D([0], [0], color="c", lw=4),
-                Line2D([0], [0], color="b", lw=4),
-                Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
-    return plt
-    
-
-class ConvLSTMCell(nn.Module):
-
-    def __init__(self, input_dim, hidden_dim, kernel_size, bias):
-        """
-        Initialize ConvLSTM cell.
-
-        Parameters
-        ----------
-        input_dim: int
-            Number of channels of input tensor.
-        hidden_dim: int
-            Number of channels of hidden state.
-        kernel_size: (int, int)
-            Size of the convolutional kernel.
-        bias: bool
-            Whether or not to add the bias.
-        """
-
-        super(ConvLSTMCell, self).__init__()
-
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-
-        self.kernel_size = kernel_size
-        self.padding = kernel_size[0] // 2, kernel_size[1] // 2
-        self.bias = bias
-
-        self.conv = nn.Conv2d(in_channels=self.input_dim + self.hidden_dim,
-                              out_channels=4 * self.hidden_dim,
-                              kernel_size=self.kernel_size,
-                              padding=self.padding,
-                              bias=self.bias)
-
-    def forward(self, input_tensor, cur_state):
-        h_cur, c_cur = cur_state
-
-        combined = torch.cat([input_tensor, h_cur], dim=1)  # concatenate along channel axis
-
-        combined_conv = self.conv(combined)
-        cc_i, cc_f, cc_o, cc_g = torch.split(combined_conv, self.hidden_dim, dim=1)
-        i = torch.sigmoid(cc_i)
-        f = torch.sigmoid(cc_f)
-        o = torch.sigmoid(cc_o)
-        g = torch.tanh(cc_g)
-
-        c_next = f * c_cur + i * g
-        h_next = o * torch.tanh(c_next)
-
-        return h_next, c_next
-
-    def init_hidden(self, batch_size, image_size):
-        height, width = image_size
-        return (torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device),
-                torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device))
-    
-
-class EncoderDecoderConvLSTM(nn.Module):
-    def __init__(self, nf, in_chan):
-        super(EncoderDecoderConvLSTM, self).__init__()
-
-        """ ARCHITECTURE 
-
-        # Encoder (ConvLSTM)
-        # Encoder Vector (final hidden state of encoder)
-        # Decoder (ConvLSTM) - takes Encoder Vector as input
-        # Decoder (3D CNN) - produces regression predictions for our model
-
-        """
-        self.encoder_1_convlstm = ConvLSTMCell(input_dim=in_chan,
-                                               hidden_dim=nf,
-                                               kernel_size=(3, 3),
-                                               bias=True)
-
-        self.encoder_2_convlstm = ConvLSTMCell(input_dim=nf,
-                                               hidden_dim=nf,
-                                               kernel_size=(3, 3),
-                                               bias=True)
-
-        self.decoder_1_convlstm = ConvLSTMCell(input_dim=nf,  # nf + 1
-                                               hidden_dim=nf,
-                                               kernel_size=(3, 3),
-                                               bias=True)
-
-        self.decoder_2_convlstm = ConvLSTMCell(input_dim=nf,
-                                               hidden_dim=nf,
-                                               kernel_size=(3, 3),
-                                               bias=True)
-
-        self.decoder_CNN = nn.Conv3d(in_channels=nf,
-                                     out_channels=1,
-                                     kernel_size=(1, 3, 3),
-                                     padding=(0, 1, 1))
-
-
-    def autoencoder(self, x, seq_len, future_step, h_t, c_t, h_t2, c_t2, h_t3, c_t3, h_t4, c_t4):
-
-        outputs = []
-
-        # encoder
-        for t in range(seq_len):
-            h_t, c_t = self.encoder_1_convlstm(input_tensor=x[:, t, :, :],
-                                               cur_state=[h_t, c_t])  # we could concat to provide skip conn here
-            h_t2, c_t2 = self.encoder_2_convlstm(input_tensor=h_t,
-                                                 cur_state=[h_t2, c_t2])  # we could concat to provide skip conn here
-
-        # encoder_vector
-        encoder_vector = h_t2
-
-        # decoder
-        for t in range(future_step):
-            h_t3, c_t3 = self.decoder_1_convlstm(input_tensor=encoder_vector,
-                                                 cur_state=[h_t3, c_t3])  # we could concat to provide skip conn here
-            h_t4, c_t4 = self.decoder_2_convlstm(input_tensor=h_t3,
-                                                 cur_state=[h_t4, c_t4])  # we could concat to provide skip conn here
-            encoder_vector = h_t4
-            outputs += [h_t4]  # predictions
-
-        outputs = torch.stack(outputs, 1)
-        outputs = outputs.permute(0, 2, 1, 3, 4)
-        outputs = self.decoder_CNN(outputs)
-        # outputs = torch.nn.Sigmoid()(outputs)
-
-        return outputs
-
-    def forward(self, x, future_seq=0, hidden_state=None):
-
-        """
-        Parameters
-        ----------
-        input_tensor:
-            5-D Tensor of shape (b, t, c, h, w)        #   batch, time, channel, height, width
-        """
-
-        # find size of different input dimensions
-        b, seq_len, _, h, w = x.size()
-
-        # initialize hidden states
-        h_t, c_t = self.encoder_1_convlstm.init_hidden(batch_size=b, image_size=(h, w))
-        h_t2, c_t2 = self.encoder_2_convlstm.init_hidden(batch_size=b, image_size=(h, w))
-        h_t3, c_t3 = self.decoder_1_convlstm.init_hidden(batch_size=b, image_size=(h, w))
-        h_t4, c_t4 = self.decoder_2_convlstm.init_hidden(batch_size=b, image_size=(h, w))
-
-        # autoencoder forward
-        outputs = self.autoencoder(x, seq_len, future_seq, h_t, c_t, h_t2, c_t2, h_t3, c_t3, h_t4, c_t4)
-
-        return outputs
-
-
-class ConvLSTM_AE(pl.LightningModule):
-    def __init__(self, batch_size, lookback, pred_horizon, epochs, batches_p_epoch, hidden_dim=64, lr=1e-4,):
-        super().__init__()
-
-        self.automatic_optimization = False
-        self.save_hyperparameters()
-
-        # Training config
-        self.criterion = torch.nn.MSELoss()
-        self.batch_size = batch_size
-        self.lookback = lookback
-        self.pred_horizon = pred_horizon
-        self.hidden_dim = hidden_dim
-        self.lr = lr
-        self.epochs = epochs
-        self.batches_p_epoch = batches_p_epoch
-        self.model = EncoderDecoderConvLSTM(nf=self.hidden_dim, in_chan=1)
-
-
-    def forward(self, x):
-
-        output = self.model(x, future_seq=self.pred_horizon)
-
-        return output
-
-    def training_step(self, batch, batch_idx):
-        X, y = batch
-        y = y.squeeze()
-
-        y_hat = self.forward(X).squeeze()
-
-        loss = self.criterion(y_hat, y)
-        self.log("train_loss", loss, prog_bar=True)
-
-        # Ranger requires manual backward pass since it is designed/executed differently to base torch optimizers (Ranger doesnt work with torch compile)
-        optimizer = self.optimizers()
-        optimizer.zero_grad()
-        self.manual_backward(loss)
-        torch.nn.utils.clip_grad_norm_(self.parameters(), 0.3)
-        chart = plot_grad_flow(self.named_parameters())
-        wandb.log({"grad_flow": wandb.Image(chart)})
-        optimizer.step()
-
-        # sch = self.lr_schedulers()
-        # sch.step()
-
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        X, y = batch
-        y = y.squeeze()
-
-        y_hat = self.forward(X).squeeze()
-        
-        loss = self.criterion(y_hat, y)
-        self.log("val_loss", loss, prog_bar=True)
-
-        return loss
-
-    def configure_optimizers(self):
-        optimizer = Ranger21(self.parameters(), lr=self.lr, num_epochs=self.epochs, num_batches_per_epoch=self.batches_p_epoch)
-        scheduler = optim.lr_scheduler.CyclicLR(optimizer, base_lr=self.lr, max_lr=1e-2)
         return optimizer
