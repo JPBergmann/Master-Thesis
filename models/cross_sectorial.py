@@ -31,12 +31,14 @@ class LSTM(pl.LightningModule):
                  dropout=0, 
                  bidirectional=True,
                  lr=1e-3, 
-                 optimizer=Ranger21):
+                 optimizer=Ranger21,
+                 activation=nn.Mish(True),
+                 loss_fn=nn.MSELoss()):
         
         super().__init__()
 
         self.automatic_optimization = False
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["activation", "loss_fn"])
 
         self.n_companies = n_companies
         self.n_features = n_features
@@ -51,16 +53,32 @@ class LSTM(pl.LightningModule):
         self.bidirectional = bidirectional
         self.lr = lr
         self.optimizer = optimizer
+        self.activation = activation
+        self.loss_fn = loss_fn
 
-        self.lstm = nn.LSTM(input_size=self.n_features, hidden_size=self.lstm_nodes, num_layers=self.lstm_layers, batch_first=True, dropout=0, bidirectional=self.bidirectional)
-        # Depending on the number of layers, we need to add more layers to the fully connected part
-        lin_layers = []
-        for i in range(self.fc_layers):
-            lin_layers.append(nn.Linear(self.fc_nodes, self.fc_nodes))
-            lin_layers.append(nn.ReLU())
-            lin_layers.append(nn.Dropout(dropout))
+        self.lstm = nn.LSTM(input_size=self.n_features, 
+                            hidden_size=self.lstm_nodes, 
+                            num_layers=self.lstm_layers, 
+                            batch_first=True, 
+                            dropout=self.dropout, 
+                            bidirectional=self.bidirectional)
 
-        self.fc = nn.Sequential(*lin_layers, nn.Linear(self.fc_nodes, self.n_companies))
+        if self.fc_layers == 1:
+            self.fc = nn.Linear(self.lstm_nodes*(1+self.bidirectional), self.n_companies)
+        else:
+            lin_layers = []
+            for i in range(self.fc_layers):
+
+                if i == 0:
+                    lin_layers.append(nn.Linear(self.lstm_nodes*(1+self.bidirectional), self.fc_nodes))
+                    lin_layers.append(self.activation)
+                    lin_layers.append(nn.Dropout(self.dropout))
+                else:
+                    lin_layers.append(nn.Linear(self.fc_nodes, self.fc_nodes))
+                    lin_layers.append(self.activation)
+                    lin_layers.append(nn.Dropout(self.dropout))
+
+            self.fc = nn.Sequential(*lin_layers, nn.Linear(self.fc_nodes, self.n_companies))
 
     def forward(self, x):
         out, _ = self.lstm(x)
@@ -70,7 +88,7 @@ class LSTM(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X)
-        loss = self.loss(y_hat, y)
+        loss = self.loss_fn(y_hat, y)
         self.log("train_loss", loss, prog_bar=True)
     
         # Ranger requires manual backward pass to get along with lightning (also, Ranger doesnt work with torch compile)
@@ -84,7 +102,7 @@ class LSTM(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X).squeeze(1)
-        loss = self.loss(y_hat, y)
+        loss = self.loss_fn(y_hat, y)
         self.log("val_loss", loss, prog_bar=True)
         return loss
     
@@ -105,44 +123,51 @@ class LSTM(pl.LightningModule):
 
 class CNN_1D_LSTM(pl.LightningModule):
     def __init__(self, 
-                 cnn_input_size, 
-                 output_size,
+                 n_companies,
+                 n_features,
                  lookback,
-                 lstm_size=64, 
+                 epochs,
+                 batches_p_epoch,
                  lstm_layers=2, 
+                 lstm_nodes=64, 
+                 fc_layers=1,
+                 fc_nodes=64,
                  dropout=0, 
-                 bidirectional=True, 
-                 last_conv_size=10, 
+                 bidirectional=True,
                  lr=1e-3, 
-                 optimizer=Ranger21):
+                 optimizer=Ranger21,
+                 activation=nn.Mish(True),
+                 loss_fn=nn.MSELoss()):
         
         super().__init__()
 
         self.automatic_optimization = False
-        self.save_hyperparameters()
-        
-        self.cnn_input_size = cnn_input_size
-        self.lstm_input_size = lstm_input_size
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.output_size = output_size
+        self.save_hyperparameters(ignore=["activation", "loss_fn"])
+
+        self.n_companies = n_companies
+        self.n_features = n_features
         self.lookback = lookback
+        self.epochs = epochs
+        self.batches_p_epoch = batches_p_epoch
+        self.lstm_layers = lstm_layers
+        self.lstm_nodes = lstm_nodes
+        self.fc_layers = fc_layers
+        self.fc_nodes = fc_nodes
         self.dropout = dropout
-        self.last_conv_size = last_conv_size
+        self.bidirectional = bidirectional
         self.lr = lr
         self.optimizer = optimizer
-        self.bidirectional = bidirectional
+        self.activation = activation
+        self.loss_fn = loss_fn
 
-        # Feature selection and dimensionality reduction using 1D convolutions with kernel size 1 (how many layers controlled by last_conv_size)
+        # Feature selection and dimensionality reduction using 1D convolutions
         self.cnn = nn.Sequential(
-            nn.Conv1d(in_channels=self.cnn_input_size, out_channels=64, kernel_size=1),
+            nn.Conv1d(in_channels=self.n_features, out_channels=64, kernel_size=1),
             nn.ReLU(True),
             nn.BatchNorm1d(64),
-            nn.Dropout(self.dropout),
             nn.Conv1d(in_channels=64, out_channels=32, kernel_size=1),
             nn.ReLU(True),
             nn.BatchNorm1d(32),
-            nn.Dropout(self.dropout),
             nn.Conv1d(in_channels=32, out_channels=self.last_conv_size, kernel_size=1),
             nn.ReLU(True),
         )

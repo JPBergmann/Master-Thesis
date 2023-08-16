@@ -548,12 +548,12 @@ def _format_tensors_cs_1D(
 
     else:
         feature_dfs = []
-        targets = pd.DataFrame()
+        target_dfs = []
         for ticker in tqdm(tickers, desc="Preparing Tensors"):
             feature_df = fin_data.copy().filter(regex=f"^{ticker}_")
             feature_df.loc[~(feature_df[f"{ticker}_CP"] > 0), feature_df.columns] = 0  # Make all rows where the target is 0 also 0
             target = feature_df.filter(regex=f"{ticker}_CP")
-            targets[f"y_{ticker}"] = target
+            target_dfs.append(target.values)
             feature_df = feature_df.drop(
                 columns=[
                     f"{ticker}_CP",
@@ -572,10 +572,10 @@ def _format_tensors_cs_1D(
         features = np.concatenate(feature_dfs, axis=1)
         # features = _create_timeseries_features(pd.concat([macro_data.copy()] + feature_dfs, axis=1))
         # features = scale(features.values)
-        targets = targets.values
+        targets = np.concatenate(target_dfs, axis=1)
 
-        #if (umap_dim is not None) and (umap_dim <= 100):
-            #features = UMAP(n_components=umap_dim).fit_transform(features) # Change and reduce features of each company? (can add corr removal for each comp?)
+        # if (umap_dim is not None) and (umap_dim <= 100):
+            # features = UMAP(n_components=umap_dim).fit_transform(features) # Change and reduce features of each company? (can add corr removal for each comp?)
 
         if multistep:
             for i in range(len(features) - lookback):

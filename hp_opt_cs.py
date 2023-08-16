@@ -1,17 +1,18 @@
 import lightning.pytorch as pl
 import numpy as np
 import optuna
-from optuna.integration import PyTorchLightningPruningCallback, WeightsAndBiasesCallback
+from optuna.integration import PyTorchLightningPruningCallback, TensorBoardCallback
 import pandas as pd
 import sklearn
 import torch
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
+from torch import cuda, mps
+from torch.nn import HuberLoss, L1Loss, MSELoss, ReLU, Mish, Tanh
+from torch.optim import Adam, SGD
 from pytorch_ranger import Ranger
 from ranger21 import Ranger21
-from torch import cuda, mps
-from torch.nn import HuberLoss, L1Loss, MSELoss, optim
 
 from helpers.cross_sectorial import (CS_DATAMODULE_1D, CS_DATAMODULE_2D,
                                      CS_VID_DATAMODULE)
@@ -30,21 +31,30 @@ def objective(trial):
 
     optimizer_name = trial.suggest_categorical("optimizer", ["Ranger21", "Ranger", "Adam", "SGD"])
     if optimizer_name == "Ranger21":
-        optimizer_cls = Ranger21
+        optimizer = Ranger21
     elif optimizer_name == "Ranger":
-        optimizer_cls = Ranger
+        optimizer = Ranger
     elif optimizer_name == "Adam":
-        optimizer_cls = optim.Adam
+        optimizer = Adam
     elif optimizer_name == "SGD":
-        optimizer_cls = optim.SGD
+        optimizer = SGD
 
     loss_name = trial.suggest_categorical("loss", ["mse", "huber", "l1"])
     if loss_name == "mse":
-        loss_cls = MSELoss
+        loss = MSELoss
     elif loss_name == "huber":
-        loss_cls = HuberLoss
+        loss = HuberLoss
     elif loss_name == "l1":
-        loss_cls = L1Loss
+        loss = L1Loss
+
+    activation_name = trial.suggest_categorical("activation", ["relu", "mish", "tanh"])
+
+    if activation_name == "relu":
+        activation = ReLU(True)
+    elif activation_name == "mish":
+        activation = Mish(True)
+    elif activation_name == "tanh":
+        activation = Tanh()
 
     # Datamodule hyperparameters
     lookback = trial.suggest_int("lookback", 3, 48)
@@ -74,8 +84,8 @@ def objective(trial):
         lookback=lookback,
         dropout=dropout,
         lr=lr,
-        optimizer=optimizer_cls,
-        loss=loss_cls
+        optimizer=optimizer,
+        loss=loss
     )
 
     data_module = CS_DATAMODULE_1D(
