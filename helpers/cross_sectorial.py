@@ -384,7 +384,7 @@ def _format_tensors_cs_1D(
         lookback = pred_horizon * 2
     if multistep and (pred_horizon == 1):
         raise ValueError("Multistep only applicable for pred_horizon > 1")
-    if red_each_dim and red_total_dim:
+    if (red_each_dim is not None) and (red_total_dim is not None):
         raise ValueError("Cannot stack more than 1 dimensionality reduction method")
     if (red_total_dim is not None) and (red_total_dim >= 100):
         raise ValueError("Cannot reduce to more than 100 dimensions")
@@ -416,22 +416,30 @@ def _format_tensors_cs_1D(
             ]
         )  # Might make model worse but safety against any leakage (appears to actually improve performance)
         
-        if red_each_dim:
+        if (red_each_dim is not None):
             if pred_target == "return":
-                feature_df = scaling_fn(np.concatenate([_create_timeseries_features(macro_data.copy()).iloc[pred_horizon:, :].values, feature_df], axis=1))
+                if scaling_fn == minmax_scale:
+                    feature_df = scaling_fn(np.concatenate([_create_timeseries_features(macro_data.copy()).iloc[pred_horizon:, :].values, feature_df], axis=1), feature_range=(-1, 1))
+                else:
+                    feature_df = scaling_fn(np.concatenate([_create_timeseries_features(macro_data.copy()).iloc[pred_horizon:, :].values, feature_df], axis=1))
             else:
-                feature_df = scaling_fn(np.concatenate([_create_timeseries_features(macro_data.copy()).values, feature_df], axis=1))
+                if scaling_fn == minmax_scale:
+                    feature_df = scaling_fn(np.concatenate([_create_timeseries_features(macro_data.copy()).values, feature_df], axis=1), feature_range=(0, 1))
+                else:
+                    feature_df = scaling_fn(np.concatenate([_create_timeseries_features(macro_data.copy()).values, feature_df], axis=1))
+
             kpca = KernelPCA(n_components=red_each_dim)
             feature_df = kpca.fit_transform(feature_df)
 
         feature_dfs.append(feature_df)
         target_dfs.append(target.values)
 
-    if (red_each_dim is not None):
-        features = np.concatenate([_create_timeseries_features(macro_data.copy()).values] + feature_dfs, axis=1)
-        features = scaling_fn(features)
+    if pred_target == "return":
+        features = np.concatenate([_create_timeseries_features(macro_data.copy()).iloc[pred_horizon:, :].values] + feature_dfs, axis=1)
+        features = scaling_fn(features, feature_range=(-1, 1)) if (scaling_fn == minmax_scale) else scaling_fn(features)
     else:
-        features = np.concatenate(feature_dfs, axis=1)
+        features = np.concatenate([_create_timeseries_features(macro_data.copy()).values] + feature_dfs, axis=1)
+        features = scaling_fn(features, feature_range=(0, 1)) if (scaling_fn == minmax_scale) else scaling_fn(features)
 
     targets = np.concatenate(target_dfs, axis=1)
 
@@ -464,7 +472,7 @@ def _format_tensors_cs_1D(
             X_sequences.append(X_seq)
             y_sequences.append(y_seq)
 
-    X, y = np.array(X_sequences), np.array(y_sequences)
+    X, y = np.array(X_sequences, dtype=np.float32), np.array(y_sequences, dtype=np.float32)
 
     # Define split indices (since numpy differs from list slicing)
     test_split = -1
@@ -481,7 +489,7 @@ def _format_tensors_cs_1D(
         y_val = y_val.reshape(1, y_val.shape[0], y_val.shape[1])
         y_test = y_test.reshape(1, y_test.shape[0], y_test.shape[1])
     else:
-        y_val = y_val.reshape(1, -1) # Replace with unsqueeze
+        y_val = y_val.reshape(1, -1)
         y_test = y_test.reshape(1, -1)
 
     return X_train, X_val, X_test, y_train, y_val, y_test
@@ -513,10 +521,10 @@ def _format_tensors_cs_2D(
         features.loc[~(features[f"{ticker}_CP"] > 0), features.columns] = 0  # Make all rows where the target is 0 also 0
         if pred_target == "return":
             target = (features.filter(regex=f"{ticker}_CP").pct_change(pred_horizon) * 100).iloc[pred_horizon:, :]
-            target = target.replace([np.inf, -np.inf], np.nan).fillna(0)
+            target = target.replace([np.inf, -np.inf], np.nan).fillna(0).values
             features = features.iloc[pred_horizon:, :]
         else:
-            target = features.filter(regex=f"{ticker}_CP")
+            target = features.filter(regex=f"{ticker}_CP").values
 
         features = features.drop(
             columns=[
@@ -529,6 +537,17 @@ def _format_tensors_cs_2D(
             ]
         )  # Might make model worse but safety against any leakage (appears to actually improve performance)
 
+        if pred_target == "return":
+            if scaling_fn == minmax_scale:
+                features = scaling_fn(features, feature_range=(-1, 1))
+            else:
+                features = scaling_fn(features)
+        else:
+            if scaling_fn == minmax_scale:
+                features = scaling_fn(features, feature_range=(0, 1))
+            else:
+                features = scaling_fn(features)
+
         X_sequences, y_sequences = [], []
 
         if multistep:
@@ -539,10 +558,10 @@ def _format_tensors_cs_2D(
                 if pred_idx > len(features) - 1:
                     continue
 
-                X_seq = features.iloc[i:lookback_idx]
-                y_seq = target.iloc[lookback_idx : pred_idx + 1]
-                X_sequences.append(X_seq.values)
-                y_sequences.append(y_seq.values)
+                X_seq = features[i:lookback_idx]
+                y_seq = target[lookback_idx : pred_idx + 1]
+                X_sequences.append(X_seq)
+                y_sequences.append(y_seq)
 
         else:
             for i in range(len(features) - lookback):
@@ -552,10 +571,10 @@ def _format_tensors_cs_2D(
                 if pred_idx > len(features) - 1:
                     continue
 
-                X_seq = features.iloc[i:lookback_idx]
-                y_seq = target.iloc[pred_idx]
-                X_sequences.append(X_seq.values)
-                y_sequences.append(y_seq.values)
+                X_seq = features[i:lookback_idx]
+                y_seq = target[pred_idx]
+                X_sequences.append(X_seq)
+                y_sequences.append(y_seq)
 
         X, y = np.array(X_sequences), np.array(y_sequences)
 
@@ -567,9 +586,12 @@ def _format_tensors_cs_2D(
     val_split = (pred_horizon + 1) * -1
     train_split = (2 * pred_horizon) * -1
 
-    X_tens = np.stack(Xs)
-    X_tens = scaling_fn(X_tens.reshape(X_tens.shape[0], -1)).reshape(X_tens.shape)  # TODO: make scalers hyperparam
-    y_tens = np.stack(ys)
+    X_tens = np.stack(Xs, dtype=np.float32)
+    #if scaling_fn == minmax_scale:
+        #X_tens = scaling_fn(X_tens.reshape(X_tens.shape[0], -1), feature_range=(-1, 1)).reshape(X_tens.shape)
+    #else:
+        #X_tens = scaling_fn(X_tens.reshape(X_tens.shape[0], -1)).reshape(X_tens.shape)
+    y_tens = np.stack(ys, dtype=np.float32)
 
     # Give data shape of (n_samples, channels, timesteps, features)
     X_tens = np.transpose(X_tens, (1, 0, 2, 3))

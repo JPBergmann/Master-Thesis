@@ -60,7 +60,7 @@ class LSTM(pl.LightningModule):
                             hidden_size=self.lstm_nodes, 
                             num_layers=self.lstm_layers, 
                             batch_first=True, 
-                            dropout=self.dropout, 
+                            dropout=self.dropout if self.lstm_layers > 1 else 0, 
                             bidirectional=self.bidirectional)
 
         if self.fc_layers == 1:
@@ -164,11 +164,12 @@ class CNN_1D_LSTM(pl.LightningModule):
         self.activation = activation
         self.loss_fn = loss_fn
 
+
         # Feature selection and dimensionality reduction using 1D convolutions
         cnn_modules = []
         in_channels = self.n_features
         for _ in range(self.cnn_layers):
-            out_channels = int(in_channels * self.conv_factor)
+            out_channels = int(in_channels * self.conv_factor) if int(in_channels * self.conv_factor) > 1 else 1 # Need this in 2D models as well!!!!!
             cnn_modules.append(nn.Conv1d(in_channels, out_channels, kernel_size=1))
             cnn_modules.append(self.activation)
             cnn_modules.append(nn.BatchNorm1d(out_channels))
@@ -182,7 +183,7 @@ class CNN_1D_LSTM(pl.LightningModule):
             hidden_size=self.lstm_nodes,
             num_layers=self.lstm_layers,
             batch_first=True,
-            dropout=self.dropout,
+            dropout=self.dropout if self.lstm_layers > 1 else 0,
             bidirectional=self.bidirectional
         )
 
@@ -292,6 +293,7 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
         self.activation = activation
         self.loss_fn = loss_fn
 
+
         # Feature projection which reduces the number of channels (best model still this and then lstm - although maybe should opt hyperparams and see)
         projection_modules = []
         in_channels = self.n_companies
@@ -325,7 +327,7 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
             hidden_size=self.lstm_nodes,
             num_layers=self.lstm_layers,
             batch_first=True,
-            dropout=self.dropout,
+            dropout=self.dropout if self.lstm_layers > 1 else 0,
             bidirectional=self.bidirectional
         )
 
@@ -464,7 +466,7 @@ class P_CNN_2D_LSTM(pl.LightningModule):
             hidden_size=self.lstm_nodes,
             num_layers=self.lstm_layers,
             batch_first=True,
-            dropout=self.dropout,
+            dropout=self.dropout if self.lstm_layers > 1 else 0,
             bidirectional=self.bidirectional
         )
 
@@ -597,7 +599,7 @@ class MH_CNN_2D_LSTM(pl.LightningModule):
             hidden_size=self.lstm_nodes,
             num_layers=self.lstm_layers,
             batch_first=True,
-            dropout=self.dropout,
+            dropout=self.dropout if self.lstm_layers > 1 else 0,
             bidirectional=self.bidirectional
         )
 
