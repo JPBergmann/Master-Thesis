@@ -2,7 +2,7 @@
 Script that optimizes hyperparameters for 1D Data for stock returns using optuna.
 """
 
-import lightning.pytorch as pl
+import pytorch_lightning as pl
 import numpy as np
 import pandas as pd
 import optuna
@@ -10,9 +10,8 @@ from optuna.integration import PyTorchLightningPruningCallback, TensorBoardCallb
 from optuna.pruners import MedianPruner
 import sklearn
 from sklearn.preprocessing import minmax_scale, robust_scale, scale
-from lightning.pytorch import Trainer, seed_everything
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, StochasticWeightAveraging
-from lightning.pytorch.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, StochasticWeightAveraging # old import to circumvent optuna bug
+from pytorch_lightning.loggers import TensorBoardLogger
 import torch
 from torch import cuda, mps
 from torch.nn import HuberLoss, L1Loss, MSELoss, ReLU, Mish, Tanh
@@ -21,7 +20,7 @@ from pytorch_ranger import Ranger
 from ranger21 import Ranger21
 
 from helpers.cross_sectorial import (CS_DATAMODULE_1D)
-from models.cross_sectorial import (LSTM, CNN_1D_LSTM)
+from models.cross_sectorial import (Vanilla_LSTM, CNN_1D_LSTM)
 
 def objective(trial):
     # Data hyperparameters
@@ -29,22 +28,20 @@ def objective(trial):
     batch_size = trial.suggest_categorical("batch_size", [16, 32, 64, 128])
     multistep = trial.suggest_categorical("multistep", [True, False])
     red_each_dim = trial.suggest_categorical("red_each_dim", [None, 1, 2, 4, 6])
+    red_total_dim = trial.suggest_categorical("red_total_dim", [None, 10, 25, 50, 75, 100])
 
-    if (red_each_dim is not None):
-        red_total_dim = trial.suggest_categorical("red_total_dim", [None, 10, 25, 50, 75, 100])
-    else:
-        red_total_dim = trial.suggest_categorical("red_total_dim", [10, 25, 50, 75, 100])
-
-    if data_type == "monthly":
-        if (not multistep):
-            pred_horizon = trial.suggest_categorical("pred_horizon", [1, 2])
-        else:
-            pred_horizon = 2
-        lookback = trial.suggest_categorical("lookback", [1, 3, 6, 12, 24, 36, 48])
-    else:
-        pred_horizon = trial.suggest_categorical("pred_horizon", [22, 41]) # Data prep stuff requires dis
-        lookback = trial.suggest_categorical("lookback", [1, 3, 6, 12, 24, 36, 48])
-        lookback = lookback * 21 # Average of 21 trading days per month (252 a year)
+    # if data_type == "monthly":
+        # pred_horizon = 1
+        # if (not multistep):
+            # pred_horizon = trial.suggest_categorical("pred_horizon", [1, 2])
+        # else:
+            # pred_horizon = 2
+    lookback = trial.suggest_categorical("lookback", [1, 3, 6, 12, 24, 36, 48])
+    # else:
+        # pred_horizon = trial.suggest_categorical("pred_horizon", [22, 41]) # Data prep stuff requires dis
+        # pred_horizon = 22
+        # lookback = trial.suggest_categorical("lookback", [1, 3, 6, 12, 24, 36, 48])
+        # lookback = lookback * 21 # Average of 21 trading days per month (252 a year)
 
     # Trainer hyperparameters
     optimizer_name = trial.suggest_categorical("optimizer", ["Ranger21", "Ranger", "Adam", "SGD"])
@@ -59,11 +56,11 @@ def objective(trial):
 
     loss_name = trial.suggest_categorical("loss", ["mse", "huber", "l1"])
     if loss_name == "mse":
-        loss_fn = MSELoss
+        loss_fn = MSELoss()
     elif loss_name == "huber":
-        loss_fn = HuberLoss
+        loss_fn = HuberLoss()
     elif loss_name == "l1":
-        loss_fn = L1Loss
+        loss_fn = L1Loss()
 
     activation_name = trial.suggest_categorical("activation", ["relu", "mish", "tanh"])
     if activation_name == "relu":
@@ -82,19 +79,21 @@ def objective(trial):
         scaler = robust_scale
 
     # Prune combinations that are not possible (in case something not cought before)
-    if multistep and (pred_horizon==1):
-        raise optuna.exceptions.TrialPruned("Trial pruned due to invalid combination of multistep and pred_horizon")
+    # if multistep and (pred_horizon==1):
+        # raise optuna.exceptions.TrialPruned("Trial pruned due to invalid combination of multistep and pred_horizon")
     
     if (red_each_dim is not None) and (red_total_dim is not None):
+        raise optuna.exceptions.TrialPruned("Trial pruned due to invalid combination of red_each_dim and red_total_dim")
+    elif (red_each_dim is None) and (red_total_dim is None):
         raise optuna.exceptions.TrialPruned("Trial pruned due to invalid combination of red_each_dim and red_total_dim")
 
     # Data module
     data = CS_DATAMODULE_1D(
         batch_size=batch_size,
         lookback=lookback,
-        pred_horizon=pred_horizon,
-        multistep=multistep,
-        data_type=data_type,
+        pred_horizon=1,
+        multistep=False,
+        data_type="monthly",
         train_workers=0,
         overwrite_cache=False,
         pred_target="return",
@@ -115,16 +114,16 @@ def objective(trial):
     lr = trial.suggest_loguniform("lr", 1e-5, 1e-1)
     dropout = trial.suggest_float("dropout", 0, 0.5)
     bidirectional = trial.suggest_categorical("bidirectional", [True, False])
-    lstm_layers = trial.suggest_categorical("lstm_layers", [1, 2, 3, 4, 5, 6])
+    lstm_layers = trial.suggest_int("lstm_layers", 1, 6)
     lstm_nodes = trial.suggest_categorical("lstm_nodes", [32, 64, 128, 256, 512])
-    fc_layers = trial.suggest_categorical("fc_layers", [1, 2, 3, 4, 5, 6])
+    fc_layers = trial.suggest_int("fc_layers", 1, 6)
     fc_nodes = trial.suggest_categorical("fc_nodes", [32, 64, 128, 256, 512])
 
     # Model and local hyperparameters
     model_name = trial.suggest_categorical("model_name", ["LSTM", "CNN_1D_LSTM"])
 
     if model_name == "LSTM":
-        model = LSTM(
+        model = Vanilla_LSTM(
             n_companies=N_COMPANIES,
             n_features=N_FEATURES,
             lookback=lookback,
@@ -143,8 +142,8 @@ def objective(trial):
         )
 
     else:
-        cnn_layers = trial.suggest_categorical("cnn_layers", [1, 2, 3, 4, 5, 6])
-        conv_factor = trial.suggest_float("conv_factor", [0.5, 1.5])
+        cnn_layers = trial.suggest_int("cnn_layers", 1, 6)
+        conv_factor = trial.suggest_float("conv_factor", 0.5, 1.5)
 
         model = CNN_1D_LSTM(
             n_companies=N_COMPANIES,
@@ -167,7 +166,7 @@ def objective(trial):
         )
 
     pruning = PyTorchLightningPruningCallback(trial, monitor="val_loss")
-    #swa = StochasticWeightAveraging(1e-2)
+    swa = StochasticWeightAveraging(1e-2)
 
 
     # Set global seed for reproducibility in numpy, torch, scikit-learn
@@ -194,7 +193,7 @@ def objective(trial):
         logger=True,
         enable_checkpointing=False,
         max_epochs=EPOCHS,
-        callbacks=[pruning],
+        callbacks=[swa, pruning],
     )
 
     trainer.fit(model, data)

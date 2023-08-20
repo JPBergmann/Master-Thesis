@@ -1,6 +1,6 @@
 from typing import Any
 
-import lightning.pytorch as pl
+import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ import wandb
 ##############################################################################################
 
 
-class LSTM(pl.LightningModule):
+class Vanilla_LSTM(pl.LightningModule):
     def __init__(self, 
                  n_companies,
                  n_features,

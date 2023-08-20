@@ -3,7 +3,7 @@ Helper functions for cross-sectorial forecasting models
 """
 import os
 
-import lightning.pytorch as pl
+import pytorch_lightning as pl
 import numpy as np
 import pandas as pd
 import torch

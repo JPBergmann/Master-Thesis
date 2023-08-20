@@ -1,6 +1,6 @@
 from typing import Any
 
-import lightning.pytorch as pl
+import pytorch_lightning as pl
 import torch
 from pytorch_ranger import Ranger
 from torch import nn, optim
