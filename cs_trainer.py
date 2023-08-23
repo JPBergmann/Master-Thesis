@@ -1,12 +1,12 @@
 import os
+import warnings
 from typing import Any
 
-import pytorch_lightning as pl
 import numpy as np
 import pandas as pd
+import pytorch_lightning as pl
 import sklearn
 import torch
-from torch.nn import (HuberLoss, L1Loss, MSELoss, ReLU, Tanh, Mish)
 from pytorch_lightning.callbacks import (EarlyStopping, LearningRateMonitor,
                                          ModelCheckpoint,
                                          StochasticWeightAveraging)
@@ -17,12 +17,12 @@ from sklearn.metrics import (mean_absolute_error,
                              mean_squared_error, r2_score)
 from sklearn.preprocessing import minmax_scale, robust_scale, scale
 from torch import cuda, mps
-from torch.nn import Mish
+from torch.nn import HuberLoss, L1Loss, Mish, MSELoss, ReLU, Tanh
+from torch.nn.functional import mse_loss
 
-from helpers.cross_sectorial import (CS_DATAMODULE_1D, CS_DATAMODULE_2D,)
-from models.cross_sectorial import (CNN_1D_LSTM, Vanilla_LSTM)
+from helpers.cross_sectorial import CS_DATAMODULE_1D, CS_DATAMODULE_2D
+from models.cross_sectorial import CNN_1D_LSTM, P_MH_CNN_2D_LSTM, Vanilla_LSTM
 
-import warnings
 warnings.filterwarnings("ignore")
 
 
@@ -39,6 +39,8 @@ def main():
         DEVICE = "cpu"
         gpu = None
 
+    DEVICE = "cpu"
+    gpu=None
     # DEVICE = "cpu"
     # Clear GPU cache
     if gpu:
@@ -55,16 +57,17 @@ def main():
     TRAIN_WORKERS = 0 # 0 fastest ...
     CLUSTER = 0
 
-    data = CS_DATAMODULE_1D(batch_size=32, 
-                            lookback=12, 
-                            pred_horizon=1,
-                            multistep=False, 
-                            data_type="monthly",
-                            pred_target="return", 
-                            overwrite_cache=False, 
-                            scaling_fn=minmax_scale,
-                            red_each_dim=1,
-                            red_total_dim=None,)
+    data = CS_DATAMODULE_2D(
+        batch_size=32,
+        lookback=12,
+        pred_horizon=1,
+        multistep=False,
+        data_type="monthly",
+        train_workers=0,
+        overwrite_cache=False,
+        pred_target="return",
+        scaling_fn=minmax_scale,
+    )
 
     data.prepare_data()
     data.setup()
@@ -76,23 +79,18 @@ def main():
     N_BATCHES = int(np.ceil(len(data.X_train_tensor) / BATCH_SIZE))
     print(f"Number of batches per Epoch: {N_BATCHES}")
 
-    model = CNN_1D_LSTM(n_companies=N_COMPANIES,
-                    n_features=N_FEATURES,
-                    lookback=12,
-                    epochs=100,
-                    batches_p_epoch=N_BATCHES,
-                    cnn_layers=6,
-                    conv_factor=0.3,
-                    lstm_layers=2,
-                    lstm_nodes=512,
-                    fc_layers=3,
-                    fc_nodes=N_COMPANIES,
-                    dropout=0.3,
-                    bidirectional=True,
-                    lr=1e-4,
-                    optimizer=Ranger21,
-                    activation=Mish(True),
-                    loss_fn=HuberLoss(),)
+    model = P_MH_CNN_2D_LSTM(
+        n_companies=N_COMPANIES,
+        n_features=N_FEATURES,
+        lookback=12,
+        epochs=100,
+        batches_p_epoch=N_BATCHES,
+        bidirectional=True,
+        lr=0.001,
+        optimizer=Ranger21,
+        activation=ReLU(),
+        loss_fn=mse_loss,
+    )
 
 
     early_stopping = EarlyStopping(monitor="val_loss", patience=10, mode="min")

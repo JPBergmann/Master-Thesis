@@ -2,9 +2,9 @@ import os
 import random
 from typing import Any
 
-import lightning.pytorch as pl
 import numpy as np
 import pandas as pd
+import pytorch_lightning as pl
 import sklearn
 import torch
 from pytorch_ranger import Ranger
@@ -36,15 +36,28 @@ def main():
     PRED_HORIZON = 1
     MULTISTEP = False
 
-    data = IT_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=False, data_type="monthly", ticker_idx=ticker_idx, overwrite_cache=True, pred_target="return")
+    data = IT_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=False, data_type="monthly", ticker_idx=ticker_idx, overwrite_cache=True, pred_target="price")
     data.prepare_data()
     data.setup()
-    # data = CS_DATAMODULE(batch_size=BATCH_SIZE, lookback=LOOKBACK, pred_horizon=PRED_HORIZON, multistep=MULTISTEP, data_type="monthly")
-    
-    model = CNN_1D_LSTM(input_size=data.X_val_tensor.shape[-1], hidden_size=64, num_layers=2, output_size=1, dropout=0, lr=LEARNING_RATE)
-    # model = CNN_2D_LSTM(cnn_input_size=409, lstm_input_size=159*10, hidden_size=159*2, num_layers=1, output_size=409, lookback=LOOKBACK, dropout=0)
-    # model = CNN_1D_LSTM(cnn_input_size=409, lstm_input_size=159, hidden_size=128, num_layers=2, output_size=409, lookback=LOOKBACK, dropout=0)
-    # compiled_model = torch.compile(model, mode="reduce-overhead", backend="aot_eager")
+
+    N_FEATURES = int(data.X_train_tensor.shape[-1])
+    N_BATCHES = int(np.ceil(len(data.X_train_tensor) / BATCH_SIZE))
+
+    model = CNN_1D_LSTM(
+        n_features=N_FEATURES,
+        lookback=LOOKBACK,
+        epochs=EPOCHS,
+        batches_p_epoch=N_BATCHES,
+        cnn_layers=2,
+        conv_factor=0.5,
+        lstm_layers=2,
+        lstm_nodes=128,
+        fc_layers=2,
+        fc_nodes=128,
+        dropout=0.2,
+        bidirectional=True,
+        lr=1e-4,
+    )
 
     early_stopping = pl.callbacks.EarlyStopping(monitor="val_loss", patience=30, mode="min")
     checkpoint = pl.callbacks.ModelCheckpoint(save_top_k=1, monitor="val_loss", mode="min")

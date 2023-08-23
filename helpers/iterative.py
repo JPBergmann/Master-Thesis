@@ -3,9 +3,9 @@ Helper functions for iterative forecasting models
 """
 import os
 
-import lightning.pytorch as pl
 import numpy as np
 import pandas as pd
+import pytorch_lightning as pl
 import torch
 import torchvision.transforms.functional as TVF
 from sklearn.preprocessing import minmax_scale, scale
@@ -14,7 +14,7 @@ from tqdm.auto import tqdm
 
 
 class IT_DATAMODULE(pl.LightningDataModule):
-    def __init__(self, batch_size, lookback, pred_horizon, multistep, data_type, ticker_idx, train_workers=0, overwrite_cache=False, pred_target="price") -> None:
+    def __init__(self, batch_size, lookback, pred_horizon, multistep, ticker_idx, data_type="monthly", train_workers=0, overwrite_cache=False, pred_target="return", multicolinearity_threshold=None) -> None:
         """
         DataModule for the CS baseline model.
 
@@ -43,6 +43,7 @@ class IT_DATAMODULE(pl.LightningDataModule):
         self.overwrite_cache = overwrite_cache
         self.ticker_idx = ticker_idx
         self.pred_target = pred_target
+        self.multicolinearity_threshold = multicolinearity_threshold
 
         if data_type == "monthly":
             self.fin_path = "./DATA/Monthly/Processed/month_data_fin_tec.parquet"
@@ -60,12 +61,12 @@ class IT_DATAMODULE(pl.LightningDataModule):
             os.makedirs("./cache/it/cnn_lstm")
 
         possible_cache_files = [
-            f"./cache/it/cnn_lstm/X_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/it/cnn_lstm/X_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/it/cnn_lstm/X_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/it/cnn_lstm/y_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/it/cnn_lstm/y_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy",
-            f"./cache/it/cnn_lstm/y_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy"
+            f"./cache/it/X_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy",
+            f"./cache/it/X_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy",
+            f"./cache/it/X_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy",
+            f"./cache/it/y_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy",
+            f"./cache/it/y_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy",
+            f"./cache/it/y_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy"
         ]
 
         if (all(os.path.exists(file) for file in possible_cache_files)) and (not self.overwrite_cache):
@@ -84,23 +85,24 @@ class IT_DATAMODULE(pl.LightningDataModule):
                                                                                 lookback=self.lookback,
                                                                                 pred_horizon=self.pred_horizon,
                                                                                 multistep=self.multistep,
-                                                                                pred_target=self.pred_target)
+                                                                                pred_target=self.pred_target,
+                                                                                multicolinearity_threshold=self.multicolinearity_threshold)
 
-            np.save(f"./cache/it/cnn_lstm/X_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", X_train)
-            np.save(f"./cache/it/cnn_lstm/X_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", X_val)
-            np.save(f"./cache/it/cnn_lstm/X_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", X_test)
-            np.save(f"./cache/it/cnn_lstm/y_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", y_train)
-            np.save(f"./cache/it/cnn_lstm/y_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", y_val)
-            np.save(f"./cache/it/cnn_lstm/y_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy", y_test)
+            np.save(f"./cache/it/X_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy", X_train)
+            np.save(f"./cache/it/X_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy", X_val)
+            np.save(f"./cache/it/X_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy", X_test)
+            np.save(f"./cache/it/y_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy", y_train)
+            np.save(f"./cache/it/y_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy", y_val)
+            np.save(f"./cache/it/y_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy", y_test)
 
 
     def setup(self, stage=None):
-        self.X_train_tensor = torch.from_numpy(np.load(f"./cache/it/cnn_lstm/X_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy")).float()
-        self.X_val_tensor = torch.from_numpy(np.load(f"./cache/it/cnn_lstm/X_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy")).float()
-        self.X_test_tensor = torch.from_numpy(np.load(f"./cache/it/cnn_lstm/X_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy")).float()
-        self.y_train_tensor = torch.from_numpy(np.load(f"./cache/it/cnn_lstm/y_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy")).float()
-        self.y_val_tensor = torch.from_numpy(np.load(f"./cache/it/cnn_lstm/y_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy")).float()
-        self.y_test_tensor = torch.from_numpy(np.load(f"./cache/it/cnn_lstm/y_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}.npy")).float()
+        self.X_train_tensor = torch.from_numpy(np.load(f"./cache/it/X_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy")).float()
+        self.X_val_tensor = torch.from_numpy(np.load(f"./cache/it/X_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy")).float()
+        self.X_test_tensor = torch.from_numpy(np.load(f"./cache/it/X_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy")).float()
+        self.y_train_tensor = torch.from_numpy(np.load(f"./cache/it/y_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy")).float()
+        self.y_val_tensor = torch.from_numpy(np.load(f"./cache/it/y_val_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy")).float()
+        self.y_test_tensor = torch.from_numpy(np.load(f"./cache/it/y_test_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy")).float()
 
         self.train_dataset = TensorDataset(self.X_train_tensor, self.y_train_tensor)
         self.val_dataset = TensorDataset(self.X_val_tensor, self.y_val_tensor)
@@ -156,32 +158,32 @@ def _format_tensors_it(
         target = (features.filter(regex=f"{ticker}_CP").pct_change(pred_horizon) * 100).iloc[pred_horizon:].replace([np.inf, -np.inf], np.nan).fillna(0)
         features = (features.pct_change(pred_horizon) * 100).iloc[pred_horizon:].replace([np.inf, -np.inf], np.nan).fillna(0)
         features = features.loc[:, features.var() != 0]  # Drop features with 0 variance
-        # features = features.drop(
-        #     columns=[
-        #         f"{ticker}_CP",
-        #         f"{ticker}_OP",
-        #         f"{ticker}_VOL",
-        #         f"{ticker}_OP",
-        #         f"{ticker}_LP",
-        #         f"{ticker}_HP",
-        #     ]
-        # )
+        features = features.drop(
+            columns=[
+                f"{ticker}_CP",
+                f"{ticker}_OP",
+                f"{ticker}_VOL",
+                f"{ticker}_OP",
+                f"{ticker}_LP",
+                f"{ticker}_HP",
+            ]
+        )
         
         features = pd.DataFrame(minmax_scale(features.values, feature_range=(-1, 1)), columns=features.columns, index=features.index)
 
     else:
         target = features.filter(regex=f"{ticker}_CP")
         features = features.loc[:, features.var() != 0]  # Drop features with 0 variance
-        # features = features.drop(
-        #     columns=[
-        #         f"{ticker}_CP",
-        #         f"{ticker}_OP",
-        #         f"{ticker}_VOL",
-        #         f"{ticker}_OP",
-        #         f"{ticker}_LP",
-        #         f"{ticker}_HP",
-        #     ]
-        # )  # Might make model worse but safety against any leakage (appears to actually improve performance)
+        features = features.drop(
+            columns=[
+                f"{ticker}_CP",
+                f"{ticker}_OP",
+                f"{ticker}_VOL",
+                f"{ticker}_OP",
+                f"{ticker}_LP",
+                f"{ticker}_HP",
+            ]
+        )  # Might make model worse but safety against any leakage (appears to actually improve performance)
 
         # Scale features
         features = pd.DataFrame(scale(features.values), columns=features.columns, index=features.index)
@@ -227,7 +229,7 @@ def _format_tensors_it(
     if debug:
         return X_sequences, y_sequences, features, target
 
-    X, y = np.array(X_sequences), np.array(y_sequences)
+    X, y = np.array(X_sequences, dtype=np.float32), np.array(y_sequences, dtype=np.float32)
 
     # Define split indices (since numpy differs from list slicing)
     test_split = -1

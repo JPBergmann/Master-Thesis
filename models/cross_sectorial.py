@@ -1,14 +1,15 @@
 from typing import Any
 
-import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 import numpy as np
+import pytorch_lightning as pl
 import torch
+import wandb
 from matplotlib.lines import Line2D
 from pytorch_ranger import Ranger
 from ranger21 import Ranger21
 from torch import nn, optim
-import wandb
+from torch.nn.functional import mse_loss
 
 ##############################################################################################
 ##############################################################################################
@@ -33,7 +34,7 @@ class Vanilla_LSTM(pl.LightningModule):
                  lr=1e-3, 
                  optimizer=Ranger21,
                  activation=nn.Mish(True),
-                 loss_fn=nn.MSELoss()):
+                 loss_fn=mse_loss):
         
         super().__init__()
 
@@ -139,7 +140,7 @@ class CNN_1D_LSTM(pl.LightningModule):
                  lr=1e-3, 
                  optimizer=Ranger21,
                  activation=nn.Mish(True),
-                 loss_fn=nn.MSELoss()):
+                 loss_fn=mse_loss):
         
         super().__init__()
 
@@ -257,6 +258,8 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
                  lookback,
                  epochs,
                  batches_p_epoch,
+                 proj_layers=3,
+                 proj_factor=0.5,
                  cnn_layers=3,
                  conv_factor=0.5,
                  lstm_layers=2, 
@@ -268,7 +271,7 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
                  lr=1e-3, 
                  optimizer=Ranger21,
                  activation=nn.Mish(True),
-                 loss_fn=nn.MSELoss()):
+                 loss_fn=mse_loss):
         
         super().__init__()
 
@@ -280,6 +283,8 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
         self.lookback = lookback
         self.epochs = epochs
         self.batches_p_epoch = batches_p_epoch
+        self.proj_layers = proj_layers
+        self.proj_factor = proj_factor
         self.cnn_layers = cnn_layers
         self.conv_factor = conv_factor
         self.lstm_layers = lstm_layers
@@ -297,8 +302,8 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
         # Feature projection which reduces the number of channels (best model still this and then lstm - although maybe should opt hyperparams and see)
         projection_modules = []
         in_channels = self.n_companies
-        for _ in range(self.cnn_layers):
-            out_channels = int(in_channels * self.conv_factor)
+        for _ in range(self.proj_layers):
+            out_channels = int(in_channels * self.proj_factor) if int(in_channels * self.proj_factor) > 1 else 1
             projection_modules.append(nn.Conv2d(in_channels, out_channels, kernel_size=1))
             projection_modules.append(self.activation)
             projection_modules.append(nn.BatchNorm2d(out_channels))
@@ -311,7 +316,7 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
         conv1d_layers = []
         in_features = self.n_features
         for _ in range(self.cnn_layers):
-            out_features = int(in_features * self.conv_factor)
+            out_features = int(in_features * self.conv_factor) if int(in_features * self.conv_factor) > 1 else 1
             conv1d_layers.append(nn.Conv1d(in_features, out_features, kernel_size=1))
             conv1d_layers.append(self.activation)
             conv1d_layers.append(nn.BatchNorm1d(out_features))
@@ -412,8 +417,8 @@ class P_CNN_2D_LSTM(pl.LightningModule):
                  lookback,
                  epochs,
                  batches_p_epoch,
-                 cnn_layers=3,
-                 conv_factor=0.5,
+                 proj_layers=3,
+                 proj_factor=0.5,
                  lstm_layers=2, 
                  lstm_nodes=64, 
                  fc_layers=1,
@@ -423,7 +428,7 @@ class P_CNN_2D_LSTM(pl.LightningModule):
                  lr=1e-3, 
                  optimizer=Ranger21,
                  activation=nn.Mish(True),
-                 loss_fn=nn.MSELoss()):
+                 loss_fn=mse_loss):
         
         super().__init__()
 
@@ -435,8 +440,8 @@ class P_CNN_2D_LSTM(pl.LightningModule):
         self.lookback = lookback
         self.epochs = epochs
         self.batches_p_epoch = batches_p_epoch
-        self.cnn_layers = cnn_layers
-        self.conv_factor = conv_factor
+        self.proj_layers = proj_layers
+        self.proj_factor = proj_factor
         self.lstm_layers = lstm_layers
         self.lstm_nodes = lstm_nodes
         self.fc_layers = fc_layers
@@ -451,8 +456,8 @@ class P_CNN_2D_LSTM(pl.LightningModule):
         # Feature projection which reduces the number of channels (best model still this and then lstm - although maybe should opt hyperparams and see)
         projection_modules = []
         in_channels = self.n_companies
-        for _ in range(self.cnn_layers):
-            out_channels = int(in_channels * self.conv_factor)
+        for _ in range(self.proj_layers):
+            out_channels = int(in_channels * self.proj_factor) if int(in_channels * self.proj_factor) > 1 else 1
             projection_modules.append(nn.Conv2d(in_channels, out_channels, kernel_size=1))
             projection_modules.append(self.activation)
             projection_modules.append(nn.BatchNorm2d(out_channels))
@@ -553,7 +558,7 @@ class MH_CNN_2D_LSTM(pl.LightningModule):
                  lr=1e-3, 
                  optimizer=Ranger21,
                  activation=nn.Mish(True),
-                 loss_fn=nn.MSELoss()):
+                 loss_fn=mse_loss):
         
         super().__init__()
 
@@ -579,11 +584,11 @@ class MH_CNN_2D_LSTM(pl.LightningModule):
         self.loss_fn = loss_fn
 
 
-        # Reduce the features dimension using 1D convolutions for each channel projection
+        # Reduce the features dimension using 1D convolutions for each channel
         conv1d_layers = []
         in_features = self.n_features
         for _ in range(self.cnn_layers):
-            out_features = int(in_features * self.conv_factor)
+            out_features = int(in_features * self.conv_factor) if int(in_features * self.conv_factor) > 1 else 1
             conv1d_layers.append(nn.Conv1d(in_features, out_features, kernel_size=1))
             conv1d_layers.append(self.activation)
             conv1d_layers.append(nn.BatchNorm1d(out_features))

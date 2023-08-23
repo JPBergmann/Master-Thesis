@@ -3,13 +3,13 @@ Helper functions for cross-sectorial forecasting models
 """
 import os
 
-import pytorch_lightning as pl
 import numpy as np
 import pandas as pd
+import pytorch_lightning as pl
 import torch
 import torchvision.transforms.functional as TVF
-from sklearn.preprocessing import minmax_scale, robust_scale, scale
 from sklearn.decomposition import KernelPCA
+from sklearn.preprocessing import minmax_scale, robust_scale, scale
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 from umap import UMAP
@@ -386,7 +386,7 @@ def _format_tensors_cs_1D(
         raise ValueError("Multistep only applicable for pred_horizon > 1")
     if (red_each_dim is not None) and (red_total_dim is not None):
         raise ValueError("Cannot stack more than 1 dimensionality reduction method")
-    if (red_total_dim is not None) and (red_total_dim >= 100):
+    if (red_total_dim is not None) and (red_total_dim > 100):
         raise ValueError("Cannot reduce to more than 100 dimensions")
 
     X_sequences, y_sequences = [], []
@@ -538,6 +538,8 @@ def _format_tensors_cs_2D(
         )  # Might make model worse but safety against any leakage (appears to actually improve performance)
 
         if pred_target == "return":
+            features = (features.pct_change(pred_horizon) * 100).iloc[pred_horizon:, :]
+            features = features.replace([np.inf, -np.inf], np.nan).fillna(0).values
             if scaling_fn == minmax_scale:
                 features = scaling_fn(features, feature_range=(-1, 1))
             else:

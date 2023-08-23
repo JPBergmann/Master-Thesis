@@ -2,25 +2,29 @@
 Script that optimizes hyperparameters for 1D Data for stock returns using optuna.
 """
 
-import pytorch_lightning as pl
+import os
+
 import numpy as np
-import pandas as pd
 import optuna
-from optuna.integration import PyTorchLightningPruningCallback, TensorBoardCallback
-from optuna.pruners import MedianPruner
+import pandas as pd
+import pytorch_lightning as pl
 import sklearn
-from sklearn.preprocessing import minmax_scale, robust_scale, scale
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, StochasticWeightAveraging # old import to circumvent optuna bug
-from pytorch_lightning.loggers import TensorBoardLogger
 import torch
-from torch import cuda, mps
-from torch.nn import HuberLoss, L1Loss, MSELoss, ReLU, Mish, Tanh
-from torch.optim import Adam, SGD
+from optuna.integration import PyTorchLightningPruningCallback
+from optuna.pruners import MedianPruner
+from pytorch_lightning.callbacks import (  # old import to circumvent optuna bug
+    EarlyStopping, ModelCheckpoint, StochasticWeightAveraging)
+from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_ranger import Ranger
 from ranger21 import Ranger21
+from sklearn.preprocessing import minmax_scale, robust_scale, scale
+from torch import cuda, mps
+from torch.nn import HuberLoss, L1Loss, LeakyReLU, Mish, MSELoss, ReLU, Tanh
+from torch.optim import SGD, Adam
 
-from helpers.cross_sectorial import (CS_DATAMODULE_1D)
-from models.cross_sectorial import (Vanilla_LSTM, CNN_1D_LSTM)
+from helpers.cross_sectorial import CS_DATAMODULE_1D
+from models.cross_sectorial import CNN_1D_LSTM, Vanilla_LSTM
+
 
 def objective(trial):
     # Data hyperparameters
@@ -62,11 +66,11 @@ def objective(trial):
     elif loss_name == "l1":
         loss_fn = L1Loss()
 
-    activation_name = trial.suggest_categorical("activation", ["relu", "mish", "tanh"])
+    activation_name = trial.suggest_categorical("activation", ["relu", "lrelu", "tanh"])
     if activation_name == "relu":
         activation = ReLU(True)
-    elif activation_name == "mish":
-        activation = Mish(True)
+    elif activation_name == "lrelu":
+        activation = LeakyReLU(True)
     elif activation_name == "tanh":
         activation = Tanh()
 
@@ -96,7 +100,7 @@ def objective(trial):
         data_type="monthly",
         train_workers=0,
         overwrite_cache=False,
-        pred_target="return",
+        pred_target="price",
         red_each_dim=red_each_dim,
         red_total_dim=red_total_dim,
         scaling_fn=scaler,
@@ -141,7 +145,7 @@ def objective(trial):
             loss_fn=loss_fn,
         )
 
-    else:
+    elif model_name == "CNN_1D_LSTM":
         cnn_layers = trial.suggest_int("cnn_layers", 1, 6)
         conv_factor = trial.suggest_float("conv_factor", 0.5, 1.5)
 
@@ -167,6 +171,9 @@ def objective(trial):
 
     pruning = PyTorchLightningPruningCallback(trial, monitor="val_loss")
     swa = StochasticWeightAveraging(1e-2)
+    checkpoint = ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1)
+    early_stopping = EarlyStopping(monitor="val_loss", patience=10, mode="min")
+    logger = TensorBoardLogger(save_dir=LOG_DIR, name=f"trial_{trial.number}", version=0) #os.path.join(LOG_DIR, f"trial_{trial.number}"), 
 
 
     # Set global seed for reproducibility in numpy, torch, scikit-learn
@@ -188,16 +195,22 @@ def objective(trial):
         gpu.empty_cache()
 
     trainer = pl.Trainer(
+        #default_root_dir=os.path.join(LOG_DIR, f"trial_{trial.number}"),
         accelerator=DEVICE,
         devices=1,
-        logger=True,
-        enable_checkpointing=False,
+        logger=logger,
+        enable_checkpointing=True,
         max_epochs=EPOCHS,
-        callbacks=[swa, pruning],
+        callbacks=[swa, early_stopping, pruning, checkpoint],
+        log_every_n_steps=1,
+        detect_anomaly=True,
     )
 
     trainer.fit(model, data)
 
+    with open(os.path.join(LOG_DIR, f"trial_{trial.number}", "best_checkpoint.txt"), "w") as f:
+        f.write(f"Model: {model._get_name()}\n")
+        f.write(f"Best Checkpoint: {checkpoint.best_model_path}\n")
     # Clear GPU cache post-training
     if gpu:
         gpu.empty_cache()
@@ -208,16 +221,17 @@ def objective(trial):
 # Run the Optuna study
 if __name__ == "__main__":
 
-    # tensorboard = TensorBoardCallback("optuna_logs/returns", metric_name="val_loss")
+    LOG_DIR = "./logs/hp_opt_cs_prices_monthly_1mo/"
+    SAVE_BEST_DIR = "./tuned_models/"
+
     pruner = MedianPruner()
 
     study = optuna.create_study(direction="minimize", pruner=pruner)
-    study.optimize(objective, n_trials=50)
+    study.optimize(objective, n_trials=10)
 
     print("Number of finished trials: {}".format(len(study.trials)))
     print("Best trial:")
-    trial = study.best_trial
-    print("  Value: {}".format(trial.value))
+    study.best_trial
     print("  Params: ")
-    for key, value in trial.params.items():
+    for key, value in study.best_trial.params.items():
         print("    {}: {}".format(key, value))
