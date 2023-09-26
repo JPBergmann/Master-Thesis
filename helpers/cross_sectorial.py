@@ -9,7 +9,7 @@ import pytorch_lightning as pl
 import torch
 import torchvision.transforms.functional as TVF
 from sklearn.decomposition import KernelPCA
-from sklearn.preprocessing import minmax_scale, robust_scale, scale
+from sklearn.preprocessing import minmax_scale, robust_scale, scale, label_binarize
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 from umap import UMAP
@@ -194,11 +194,14 @@ class CS_DATAMODULE_2D(pl.LightningDataModule):
         lookback,
         pred_horizon,
         multistep,
+        tickers,
         data_type="monthly",
         train_workers=0,
         overwrite_cache=False,
         pred_target="return",
         scaling_fn=scale,
+        cluster=None,
+        goal="classification",
     ) -> None:
         """
         DataModule for the CS baseline model.
@@ -224,35 +227,44 @@ class CS_DATAMODULE_2D(pl.LightningDataModule):
         self.lookback = lookback
         self.pred_horizon = pred_horizon
         self.multistep = multistep
+        self.tickers = tickers
         self.data_type = data_type
         self.overwrite_cache = overwrite_cache
         self.pred_target = pred_target
         self.scaling_fn = scaling_fn
+        self.cluster = cluster
+        self.goal = goal
 
         if data_type == "monthly":
             self.fin_path = "./DATA/Monthly/Processed/month_data_fin_tec.parquet"
             self.macro_path = "./DATA/Monthly/Processed/month_data_macro_USCA.parquet"
-            self.tickers_path = "./DATA/Tickers/month_tickers_clean.txt"
+            if (cluster is not None):
+                self.tickers_path = f"./DATA/Tickers/month_tickers_clean_cluster{cluster}.txt"
+            else:
+                self.tickers_path = "./DATA/Tickers/month_tickers_clean.txt"
 
         elif data_type == "daily":
             self.fin_path = "./DATA/Daily/Processed/day_data_fin_tec.parquet"
             self.macro_path = "./DATA/Daily/Processed/day_data_macro_USCA.parquet"
-            self.tickers_path = "./DATA/Tickers/day_tickers_clean.txt"
+            if (cluster is not None):
+                self.tickers_path = f"./DATA/Tickers/day_tickers_clean_cluster{cluster}.txt"
+            else:
+                self.tickers_path = "./DATA/Tickers/day_tickers_clean.txt"
 
-        with open(self.tickers_path, "r") as f:
-            self.tickers = f.read().strip().split("\n")
+        #with open(self.tickers_path, "r") as f:
+            #self.tickers = f.read().strip().split("\n")
 
     def prepare_data(self):
         if not os.path.exists("./cache/cs/2D"):
             os.makedirs("./cache/cs/2D")
 
         possible_cache_files = [
-            f"./cache/cs/2D/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
-            f"./cache/cs/2D/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
-            f"./cache/cs/2D/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
-            f"./cache/cs/2D/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
-            f"./cache/cs/2D/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
-            f"./cache/cs/2D/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
+            f"./cache/cs/2D/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
+            f"./cache/cs/2D/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
+            f"./cache/cs/2D/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
+            f"./cache/cs/2D/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
+            f"./cache/cs/2D/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
+            f"./cache/cs/2D/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
         ]
 
         if (all(os.path.exists(file) for file in possible_cache_files)) and (not self.overwrite_cache):
@@ -270,63 +282,64 @@ class CS_DATAMODULE_2D(pl.LightningDataModule):
                 pred_horizon=self.pred_horizon,
                 multistep=self.multistep,
                 pred_target=self.pred_target,
-                scaling_fn=self.scaling_fn
+                scaling_fn=self.scaling_fn,
+                goal=self.goal
             )
 
             np.save(
-                f"./cache/cs/2D/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
+                f"./cache/cs/2D/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
                 X_train,
             )
             np.save(
-                f"./cache/cs/2D/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
+                f"./cache/cs/2D/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
                 X_val,
             )
             np.save(
-                f"./cache/cs/2D/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
+                f"./cache/cs/2D/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
                 X_test,
             )
             np.save(
-                f"./cache/cs/2D/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
+                f"./cache/cs/2D/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
                 y_train,
             )
             np.save(
-                f"./cache/cs/2D/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
+                f"./cache/cs/2D/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
                 y_val,
             )
             np.save(
-                f"./cache/cs/2D/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy",
+                f"./cache/cs/2D/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy",
                 y_test,
             )
 
     def setup(self, stage=None):
         self.X_train_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/2D/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy"
+                f"./cache/cs/2D/X_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy"
             )
         ).float()
         self.X_val_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/2D/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy"
+                f"./cache/cs/2D/X_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy"
             )
         ).float()
         self.X_test_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/2D/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy"
+                f"./cache/cs/2D/X_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy"
             )
         ).float()
         self.y_train_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/2D/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy"
+                f"./cache/cs/2D/y_train_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy"
             )
         ).float()
         self.y_val_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/2D/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy"
+                f"./cache/cs/2D/y_val_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy"
             )
         ).float()
         self.y_test_tensor = torch.from_numpy(
             np.load(
-                f"./cache/cs/2D/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}.npy"
+                f"./cache/cs/2D/y_test_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_scaler{self.scaling_fn.__name__}_pred_target{self.pred_target}_cluster{self.cluster}.npy"
             )
         ).float()
 
@@ -503,7 +516,8 @@ def _format_tensors_cs_2D(
     pred_horizon=1,
     multistep=False,
     pred_target="return",
-    scaling_fn=scale
+    scaling_fn=scale,
+    goal="classification",
 ):
     if not lookback:
         lookback = pred_horizon * 2
@@ -519,10 +533,15 @@ def _format_tensors_cs_2D(
 
         features = pd.concat([fin_df, macro_df], axis=1)
         features.loc[~(features[f"{ticker}_CP"] > 0), features.columns] = 0  # Make all rows where the target is 0 also 0
+
         if pred_target == "return":
             target = (features.filter(regex=f"{ticker}_CP").pct_change(pred_horizon) * 100).iloc[pred_horizon:, :]
             target = target.replace([np.inf, -np.inf], np.nan).fillna(0).values
-            features = features.iloc[pred_horizon:, :]
+            if goal == "classification":
+                bins = [-np.inf, -15, -5, 5, 15, np.inf]
+                labels = [0, 1, 2, 3, 4]
+                target = pd.cut(target.squeeze(), bins=bins, labels=labels, include_lowest=True).to_numpy()
+                target = label_binarize(target, classes=labels)
         else:
             target = features.filter(regex=f"{ticker}_CP").values
 
@@ -536,10 +555,13 @@ def _format_tensors_cs_2D(
                 f"{ticker}_HP",
             ]
         )  # Might make model worse but safety against any leakage (appears to actually improve performance)
+        features = features.astype(np.float64)
+        # features = np.log1p(features).replace([np.inf, -np.inf], np.nan).fillna(0)
 
         if pred_target == "return":
-            features = (features.pct_change(pred_horizon) * 100).iloc[pred_horizon:, :]
-            features = features.replace([np.inf, -np.inf], np.nan).fillna(0).values
+            features = np.log1p(features.diff(pred_horizon)).iloc[pred_horizon:, :]
+            features = features.replace([np.inf, -np.inf], np.nan).fillna(0).to_numpy(dtype=np.float64)
+
             if scaling_fn == minmax_scale:
                 features = scaling_fn(features, feature_range=(-1, 1))
             else:
@@ -585,8 +607,7 @@ def _format_tensors_cs_2D(
 
     # Define split indices (since numpy differs from list slicing)
     test_split = -1
-    val_split = (pred_horizon + 1) * -1
-    train_split = (2 * pred_horizon) * -1
+    val_split = -2
 
     X_tens = np.stack(Xs, dtype=np.float32)
     #if scaling_fn == minmax_scale:
@@ -597,18 +618,19 @@ def _format_tensors_cs_2D(
 
     # Give data shape of (n_samples, channels, timesteps, features)
     X_tens = np.transpose(X_tens, (1, 0, 2, 3))
-    if multistep:
+
+    if multistep or (goal == "classification"):
         y_tens = np.transpose(y_tens.squeeze(), (1, 0, 2))
     else:
         y_tens = np.transpose(y_tens.squeeze(), (1, 0))
 
-    X_train, X_val, X_test = X_tens[:train_split], X_tens[val_split], X_tens[test_split]
-    y_train, y_val, y_test = y_tens[:train_split], y_tens[val_split], y_tens[test_split]
+    X_train, X_val, X_test = X_tens[:val_split], X_tens[val_split], X_tens[test_split]
+    y_train, y_val, y_test = y_tens[:val_split], y_tens[val_split], y_tens[test_split]
 
     X_val = X_val.reshape(1, X_val.shape[0], X_val.shape[1], X_val.shape[2])
     X_test = X_test.reshape(1, X_test.shape[0], X_test.shape[1], X_test.shape[2])
 
-    if multistep:
+    if multistep or (goal == "classification"):
         y_val = y_val.reshape(1, y_val.shape[0], y_val.shape[1])
         y_test = y_test.reshape(1, y_test.shape[0], y_test.shape[1])
     else:

@@ -1,9 +1,12 @@
 """
-Script that optimizes hyperparameters for 1D Data for stock returns using optuna.
+Script that optimizes hyperparameters for 2D cs Data for stock prices using optuna.
 """
 
+import logging
 import os
+import sys
 import time
+import shutil
 
 import numpy as np
 import optuna
@@ -25,50 +28,25 @@ from torch.nn.functional import mse_loss
 from torch.optim import SGD, Adam
 
 from helpers.cross_sectorial import CS_DATAMODULE_2D
-from models.cross_sectorial import (MH_CNN_2D_LSTM, P_CNN_2D_LSTM,
-                                    P_MH_CNN_2D_LSTM)
+from models.cross_sectorial import P_CNN_2D_LSTM
 
 
 def objective(trial):
     # Starting time and logs
-    LOG_DIR = "./logs/hp_opt_cs_returns2D_monthly_1mo/"
+    LOG_DIR = f"./logs/hp_opt_cs_price_monthly_1mo_cluster0batch1v2"
+
+    # Delete all logs except that of the best trial
+    if os.path.exists(LOG_DIR):
+        for file in os.listdir(LOG_DIR):
+            if file != f"trial_{study.best_trial.number}":
+                shutil.rmtree(os.path.join(LOG_DIR, file))
 
     # Data hyperparameters
-    batch_size = trial.suggest_categorical("batch_size", [16, 32, 64])
+    batch_size = trial.suggest_categorical("batch_size", [16, 32, 64, 128])
     lookback = trial.suggest_categorical("lookback", [1, 3, 6, 12, 24, 36])
 
     # Trainer hyperparameters
-    optimizer_name = trial.suggest_categorical("optimizer", ["Ranger21", "Ranger", "Adam", "SGD"])
-    if optimizer_name == "Ranger21":
-        optimizer = Ranger21
-    elif optimizer_name == "Ranger":
-        optimizer = Ranger
-    elif optimizer_name == "Adam":
-        optimizer = Adam
-    elif optimizer_name == "SGD":
-        optimizer = SGD
-
-    # loss_name = trial.suggest_categorical("loss", ["mse", "huber", "l1"])
-    # if loss_name == "mse":
-    #     loss_fn = MSELoss()
-    # elif loss_name == "huber":
-    #     loss_fn = HuberLoss()
-    # elif loss_name == "l1":
-    #     loss_fn = L1Loss()
-
-    activation_name = trial.suggest_categorical("activation", ["relu", "lrelu", "tanh"])
-    if activation_name == "relu":
-        activation = ReLU(True)
-    elif activation_name == "lrelu":
-        activation = LeakyReLU(True)
-
-    scaler_name = trial.suggest_categorical("scaler", ["standard", "minmax", "robust"])
-    if scaler_name == "standard":
-        scaler = scale
-    elif scaler_name == "minmax":
-        scaler = minmax_scale
-    elif scaler_name == "robust":
-        scaler = robust_scale
+    optimizer = Ranger
 
     # Data module 
     data = CS_DATAMODULE_2D(
@@ -79,34 +57,32 @@ def objective(trial):
         data_type="monthly",
         train_workers=0,
         overwrite_cache=False,
-        pred_target="return",
-        scaling_fn=scaler,
+        pred_target="price",
+        scaling_fn=robust_scale,
+        cluster=0,
+        goal="regression"
     )
 
     # Global model hyperparameters and constants
     data.prepare_data()
     data.setup()
 
-    N_COMPANIES = int(len(data.tickers))
+    N_COMPANIES = 136 #int(len(data.tickers))
     N_FEATURES = int(data.X_train_tensor.shape[-1])
     EPOCHS = trial.suggest_categorical("epochs", [500, 1000, 5000])
     N_BATCHES = int(np.ceil(len(data.X_train_tensor) / batch_size))
 
-    lr = trial.suggest_loguniform("lr", 1e-5, 1e-1)
+    lr = trial.suggest_loguniform("lr", 1e-5, 1e-2)
     dropout = trial.suggest_float("dropout", 0, 0.5)
     bidirectional = trial.suggest_categorical("bidirectional", [True, False])
-    lstm_layers = trial.suggest_int("lstm_layers", 1, 6)
-    lstm_nodes = trial.suggest_categorical("lstm_nodes", [32, 64, 128, 256, 512])
-    fc_layers = trial.suggest_int("fc_layers", 1, 6)
-    fc_nodes = trial.suggest_categorical("fc_nodes", [32, 64, 128, 256, 512])
+    lstm_layers = trial.suggest_int("lstm_layers", 1, 4)
+    lstm_nodes = trial.suggest_categorical("lstm_nodes", [64, 128, 256, 512, 768, 1024])
+    fc_layers = trial.suggest_int("fc_layers", 1, 4)
+    fc_nodes = trial.suggest_categorical("fc_nodes", [64, 128, 256, 512, 768, 1024])
+    proj_layers = trial.suggest_int("proj_layers", 1, 4)
+    proj_factor = trial.suggest_float("proj_factor", 0.2, 0.5)
 
-
-    proj_layers = trial.suggest_int("proj_layers", 2, 6)
-    proj_factor = trial.suggest_float("proj_factor", 0.1, 0.8)
-    cnn_layers = trial.suggest_int("cnn_layers", 2, 6)
-    conv_factor = trial.suggest_float("conv_factor", 0.1, 0.8)
-
-    model = P_MH_CNN_2D_LSTM(
+    model = P_CNN_2D_LSTM(
         n_companies=N_COMPANIES,
         n_features=N_FEATURES,
         lookback=lookback,
@@ -114,8 +90,6 @@ def objective(trial):
         batches_p_epoch=N_BATCHES,
         proj_layers=proj_layers,
         proj_factor=proj_factor,
-        cnn_layers=cnn_layers,
-        conv_factor=conv_factor,
         lstm_layers=lstm_layers,
         lstm_nodes=lstm_nodes,
         fc_layers=fc_layers,
@@ -124,14 +98,12 @@ def objective(trial):
         bidirectional=bidirectional,
         lr=lr,
         optimizer=optimizer,
-        activation=activation,
-        loss_fn=mse_loss,
     )
 
 
     swa = StochasticWeightAveraging(1e-2)
     checkpoint = ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1)
-    early_stopping = EarlyStopping(monitor="val_loss", patience=3, mode="min")
+    early_stopping = EarlyStopping(monitor="val_loss", patience=10, mode="min")
     logger = TensorBoardLogger(save_dir=LOG_DIR, name=f"trial_{trial.number}", version=0)
     pruner = PyTorchLightningPruningCallback(trial, monitor="val_loss")
 
@@ -142,7 +114,7 @@ def objective(trial):
     if torch.cuda.is_available():
         DEVICE = "cuda"
         gpu = cuda
-        torch.set_float32_matmul_precision("high")
+        torch.set_float32_matmul_precision("medium")
     elif torch.backends.mps.is_available():
         DEVICE = "mps"
         gpu = mps
@@ -159,10 +131,10 @@ def objective(trial):
         max_epochs=EPOCHS,
         callbacks=[swa, early_stopping, checkpoint, pruner],
         log_every_n_steps=1,
-        detect_anomaly=True,
     )
 
     trainer.fit(model, data)
+    gpu.empty_cache()
 
     with open(os.path.join(LOG_DIR, f"trial_{trial.number}", "best_checkpoint.txt"), "w") as f:
         f.write(f"Model: {model._get_name()}\n")
@@ -174,15 +146,14 @@ def objective(trial):
 # Run the Optuna study
 if __name__ == "__main__":
 
-    prune = MedianPruner()
-    study = optuna.create_study(direction="minimize", pruner=prune)
-    study.optimize(objective, timeout=259_200, catch=(UserWarning, RuntimeError)) # Timeout of 3 days (259200 seconds)
+    LOG_DIR = f"./logs/hp_opt_cs_price_monthly_1mo_cluster0batch1v2"
 
-    print("Number of finished trials: {}".format(len(study.trials)))
-    print("Best trial:")
-    study.best_trial
-    print("Bets trial num:")
-    study.best_trial.number
-    print("  Params: ")
-    for key, value in study.best_trial.params.items():
-        print("    {}: {}".format(key, value))
+    optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
+    prune = MedianPruner(n_startup_trials=50, n_warmup_steps=100, interval_steps=5)
+    study = optuna.create_study(direction="minimize", pruner=prune)
+    study.optimize(objective, n_trials=500, catch=(UserWarning, RuntimeError, ValueError, MemoryError)) # Run for 36 hours
+
+    with open(os.path.join(LOG_DIR, "best_trial.txt"), "w") as f:
+        f.write(f"trial_{study.best_trial.number}\n")
+        f.write(f"Loss: {study.best_trial.value}\n")
+        f.write(f"Params: {study.best_trial.params}\n")

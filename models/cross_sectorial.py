@@ -9,7 +9,8 @@ from matplotlib.lines import Line2D
 from pytorch_ranger import Ranger
 from ranger21 import Ranger21
 from torch import nn, optim
-from torch.nn.functional import mse_loss
+import torch.nn.functional as F
+from torchmetrics.functional import accuracy
 
 ##############################################################################################
 ##############################################################################################
@@ -34,7 +35,7 @@ class Vanilla_LSTM(pl.LightningModule):
                  lr=1e-3, 
                  optimizer=Ranger21,
                  activation=nn.Mish(True),
-                 loss_fn=mse_loss):
+                 loss_fn=F.mse_loss):
         
         super().__init__()
 
@@ -140,7 +141,7 @@ class CNN_1D_LSTM(pl.LightningModule):
                  lr=1e-3, 
                  optimizer=Ranger21,
                  activation=nn.Mish(True),
-                 loss_fn=mse_loss):
+                 loss_fn=F.mse_loss):
         
         super().__init__()
 
@@ -270,8 +271,7 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
                  bidirectional=True,
                  lr=1e-3, 
                  optimizer=Ranger21,
-                 activation=nn.Mish(True),
-                 loss_fn=mse_loss):
+                 classification=False,):
         
         super().__init__()
 
@@ -295,8 +295,7 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
         self.bidirectional = bidirectional
         self.lr = lr
         self.optimizer = optimizer
-        self.activation = activation
-        self.loss_fn = loss_fn
+        self.classification = classification
 
 
         # Feature projection which reduces the number of channels (best model still this and then lstm - although maybe should opt hyperparams and see)
@@ -305,7 +304,7 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
         for _ in range(self.proj_layers):
             out_channels = int(in_channels * self.proj_factor) if int(in_channels * self.proj_factor) > 1 else 1
             projection_modules.append(nn.Conv2d(in_channels, out_channels, kernel_size=1))
-            projection_modules.append(self.activation)
+            projection_modules.append(nn.ReLU(True))
             projection_modules.append(nn.BatchNorm2d(out_channels))
             in_channels = out_channels
 
@@ -318,7 +317,7 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
         for _ in range(self.cnn_layers):
             out_features = int(in_features * self.conv_factor) if int(in_features * self.conv_factor) > 1 else 1
             conv1d_layers.append(nn.Conv1d(in_features, out_features, kernel_size=1))
-            conv1d_layers.append(self.activation)
+            conv1d_layers.append(nn.ReLU(True))
             conv1d_layers.append(nn.BatchNorm1d(out_features))
             in_features = out_features
 
@@ -338,21 +337,26 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
 
         # Fully connected layer
         if self.fc_layers == 1:
-            self.fc = nn.Linear(self.lstm_nodes*(1+self.bidirectional), self.n_companies)
+            if self.classification:
+                self.fc = nn.Linear(self.lstm_nodes*(1+self.bidirectional), self.n_companies*5)
+            else:
+                self.fc = nn.Linear(self.lstm_nodes*(1+self.bidirectional), self.n_companies)
         else:
             lin_layers = []
             for i in range(self.fc_layers):
 
                 if i == 0:
                     lin_layers.append(nn.Linear(self.lstm_nodes*(1+self.bidirectional), self.fc_nodes))
-                    lin_layers.append(self.activation)
+                    lin_layers.append(nn.ReLU(True))
                     lin_layers.append(nn.Dropout(self.dropout))
                 else:
                     lin_layers.append(nn.Linear(self.fc_nodes, self.fc_nodes))
-                    lin_layers.append(self.activation)
+                    lin_layers.append(nn.ReLU(True))
                     lin_layers.append(nn.Dropout(self.dropout))
-
-            self.fc = nn.Sequential(*lin_layers, nn.Linear(self.fc_nodes, self.n_companies))
+            if self.classification:
+                self.fc = nn.Sequential(*lin_layers, nn.Linear(self.fc_nodes, self.n_companies*5))
+            else:
+                self.fc = nn.Sequential(*lin_layers, nn.Linear(self.fc_nodes, self.n_companies))
 
     def forward(self, x):
         # Feature Projections (Channel Pooling)
@@ -372,14 +376,30 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
         lstm_output, _ = self.lstm(conv_features)
         lstm_output = lstm_output[:, -1, :]  # Taking the last time step's output
         
+        # Classification output
+        if self.classification:
+            classification_output = self.fc(lstm_output).reshape(-1, self.n_companies, 5)
+            # classification_output = F.softmax(classification_output, dim=2)
+            return classification_output
+        
+        # Regression output
         regression_output = self.fc(lstm_output)
         return regression_output
 
     def training_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X)
-        loss = self.loss_fn(y_hat, y)
+
+        if self.classification:
+            loss = F.cross_entropy(y_hat, y)
+            acc = accuracy(y_hat.argmax(dim=2), y.argmax(dim=2), task="multiclass", num_classes=5)
+        else:
+            loss = F.mse_loss(y_hat, y)
+            acc = None  # No accuracy for regression
+        
         self.log("train_loss", loss, prog_bar=True)
+        if acc is not None:
+            self.log("train_accuracy", acc, prog_bar=True)
     
         optimizer = self.optimizers()
         optimizer.zero_grad()
@@ -391,8 +411,18 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X)
-        loss = self.loss_fn(y_hat, y)
+
+        if self.classification:
+            loss = F.cross_entropy(y_hat, y)
+            acc = accuracy(y_hat.argmax(dim=2), y.argmax(dim=2), task="multiclass", num_classes=5)
+        else:
+            loss = F.mse_loss(y_hat, y)
+            acc = None  # No accuracy for regression
+        
         self.log("val_loss", loss, prog_bar=True)
+        if acc is not None:
+            self.log("val_accuracy", acc, prog_bar=True)
+            
         return loss
     
     def configure_optimizers(self):
@@ -401,7 +431,7 @@ class P_MH_CNN_2D_LSTM(pl.LightningModule):
         else:
             optimizer = self.optimizer(self.parameters(), lr=self.lr)
         return optimizer
-    
+
 
 ##############################################################################################
 ##############################################################################################
@@ -426,9 +456,7 @@ class P_CNN_2D_LSTM(pl.LightningModule):
                  dropout=0, 
                  bidirectional=True,
                  lr=1e-3, 
-                 optimizer=Ranger21,
-                 activation=nn.Mish(True),
-                 loss_fn=mse_loss):
+                 optimizer=Ranger21,):
         
         super().__init__()
 
@@ -450,8 +478,6 @@ class P_CNN_2D_LSTM(pl.LightningModule):
         self.bidirectional = bidirectional
         self.lr = lr
         self.optimizer = optimizer
-        self.activation = activation
-        self.loss_fn = loss_fn
 
         # Feature projection which reduces the number of channels (best model still this and then lstm - although maybe should opt hyperparams and see)
         projection_modules = []
@@ -459,7 +485,7 @@ class P_CNN_2D_LSTM(pl.LightningModule):
         for _ in range(self.proj_layers):
             out_channels = int(in_channels * self.proj_factor) if int(in_channels * self.proj_factor) > 1 else 1
             projection_modules.append(nn.Conv2d(in_channels, out_channels, kernel_size=1))
-            projection_modules.append(self.activation)
+            projection_modules.append(nn.ReLU(True))
             projection_modules.append(nn.BatchNorm2d(out_channels))
             in_channels = out_channels
 
@@ -484,11 +510,11 @@ class P_CNN_2D_LSTM(pl.LightningModule):
 
                 if i == 0:
                     lin_layers.append(nn.Linear(self.lstm_nodes*(1+self.bidirectional), self.fc_nodes))
-                    lin_layers.append(self.activation)
+                    lin_layers.append(nn.ReLU(True))
                     lin_layers.append(nn.Dropout(self.dropout))
                 else:
                     lin_layers.append(nn.Linear(self.fc_nodes, self.fc_nodes))
-                    lin_layers.append(self.activation)
+                    lin_layers.append(nn.ReLU(True))
                     lin_layers.append(nn.Dropout(self.dropout))
 
             self.fc = nn.Sequential(*lin_layers, nn.Linear(self.fc_nodes, self.n_companies))
@@ -508,7 +534,7 @@ class P_CNN_2D_LSTM(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X)
-        loss = self.loss_fn(y_hat, y)
+        loss = F.mse_loss(y_hat, y)
         self.log("train_loss", loss, prog_bar=True)
     
         optimizer = self.optimizers()
@@ -521,7 +547,7 @@ class P_CNN_2D_LSTM(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X)
-        loss = self.loss_fn(y_hat, y)
+        loss = F.mse_loss(y_hat, y)
         self.log("val_loss", loss, prog_bar=True)
         return loss
     
@@ -556,9 +582,7 @@ class MH_CNN_2D_LSTM(pl.LightningModule):
                  dropout=0, 
                  bidirectional=True,
                  lr=1e-3, 
-                 optimizer=Ranger21,
-                 activation=nn.Mish(True),
-                 loss_fn=mse_loss):
+                 optimizer=Ranger21,):
         
         super().__init__()
 
@@ -580,8 +604,6 @@ class MH_CNN_2D_LSTM(pl.LightningModule):
         self.bidirectional = bidirectional
         self.lr = lr
         self.optimizer = optimizer
-        self.activation = activation
-        self.loss_fn = loss_fn
 
 
         # Reduce the features dimension using 1D convolutions for each channel
@@ -590,7 +612,7 @@ class MH_CNN_2D_LSTM(pl.LightningModule):
         for _ in range(self.cnn_layers):
             out_features = int(in_features * self.conv_factor) if int(in_features * self.conv_factor) > 1 else 1
             conv1d_layers.append(nn.Conv1d(in_features, out_features, kernel_size=1))
-            conv1d_layers.append(self.activation)
+            conv1d_layers.append(nn.ReLU(True))
             conv1d_layers.append(nn.BatchNorm1d(out_features))
             in_features = out_features
 
@@ -617,11 +639,11 @@ class MH_CNN_2D_LSTM(pl.LightningModule):
 
                 if i == 0:
                     lin_layers.append(nn.Linear(self.lstm_nodes*(1+self.bidirectional), self.fc_nodes))
-                    lin_layers.append(self.activation)
+                    lin_layers.append(nn.ReLU(True))
                     lin_layers.append(nn.Dropout(self.dropout))
                 else:
                     lin_layers.append(nn.Linear(self.fc_nodes, self.fc_nodes))
-                    lin_layers.append(self.activation)
+                    lin_layers.append(nn.ReLU(True))
                     lin_layers.append(nn.Dropout(self.dropout))
 
             self.fc = nn.Sequential(*lin_layers, nn.Linear(self.fc_nodes, self.n_companies))
@@ -648,7 +670,7 @@ class MH_CNN_2D_LSTM(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X)
-        loss = self.loss_fn(y_hat, y)
+        loss = F.mse_loss(y_hat, y)
         self.log("train_loss", loss, prog_bar=True)
     
         optimizer = self.optimizers()
@@ -661,7 +683,7 @@ class MH_CNN_2D_LSTM(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         X, y = batch
         y_hat = self.forward(X)
-        loss = self.loss_fn(y_hat, y)
+        loss = F.mse_loss(y_hat, y)
         self.log("val_loss", loss, prog_bar=True)
         return loss
     
