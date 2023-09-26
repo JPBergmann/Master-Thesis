@@ -2,9 +2,11 @@
 Script that optimizes hyperparameters for 1D Data for stock returns using optuna.
 """
 
+import argparse
 import gc
 import logging
 import os
+import shutil
 import sys
 import time
 
@@ -144,6 +146,7 @@ def objective(trial, ticker_idx):
     )
 
     trainer.fit(model, data)
+    gpu.empty_cache()
 
     with open(os.path.join(LOG_DIR, f"trial_{trial.number}", "best_checkpoint.txt"), "w") as f:
         f.write(f"Model: {model._get_name()}\n")
@@ -155,45 +158,35 @@ def tune(ticker, idx):
     # Sumba
     LOG_DIR = f"./logs/hp_opt_it_price_monthly_1mo/{idx}"
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
-    prune = MedianPruner()
+    prune = MedianPruner(n_startup_trials=50, n_warmup_steps=5, interval_steps=1)
     study = optuna.create_study(direction="minimize", pruner=prune)
     study.optimize(lambda trial: objective(trial, idx), 
-                   timeout=15*60, 
-                   catch=(UserWarning, RuntimeError,),
+                   n_trials=500, 
+                   catch=(UserWarning, RuntimeError, ValueError),
                    )
 
     with open(os.path.join(LOG_DIR, "best_trial.txt"), "w") as f:
         f.write(f"trial_{study.best_trial.number}\n")
+        f.write(f"Loss: {study.best_trial.value}\n")
+        f.write(f"Params: {study.best_trial.params}\n")
+
+    # Delete all logs except that of the best trial
+    if os.path.exists(LOG_DIR):
+        for file in os.listdir(LOG_DIR):
+            if (file != f"trial_{study.best_trial.number}") and (os.path.isdir(os.path.join(LOG_DIR, file))):
+                shutil.rmtree(os.path.join(LOG_DIR, file))
 
     del study
     gc.collect()
 
-# Run the Optuna study
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ticker", required=True, help="The ticker symbol")
+    parser.add_argument("--index", required=True, type=int, help="The index")
+    args = parser.parse_args()
 
-    LOG_DIR = "./logs/hp_opt_it_price_monthly_1mo/"
-
-    if torch.cuda.is_available():
-        DEVICE = "cuda"
-        gpu = cuda
-        torch.set_float32_matmul_precision("high")
-    elif torch.backends.mps.is_available():
-        DEVICE = "mps"
-        gpu = mps
-    else:
-        DEVICE = "cpu"
-        gpu = None
-
-    with open("./DATA/Tickers/month_tickers_clean.txt", "r") as f:
-        tickers = f.read().strip().split("\n")
-
-    for idx, ticker in enumerate(tickers[165:], start=165):
-        print(f"Tuning {ticker}...")
-        try:
-            tune(ticker, idx)
-            gpu.empty_cache()
-        except:
-            # print(f"Failed to tune {ticker}...")
-            # with open(f"./logs/failed_trials.txt", "a") as f:
-            #     f.write(f"{ticker}\n")
-            continue
+    try:
+        tune(args.ticker, args.index)
+    except:
+        # Handle errors if needed
+        pass

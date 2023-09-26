@@ -5,7 +5,7 @@ optimization_script_template = """
 # Auto-generated script for optimizing <TICKER> at index <INDEX>
 import sys
 sys.path.append(".")  # Add the directory containing the template script
-from template_script import tune
+from hp_opt_it_prices_monthly_1mo import tune
 
 # Replace with the actual ticker and index
 tune("<TICKER>", <INDEX>)
