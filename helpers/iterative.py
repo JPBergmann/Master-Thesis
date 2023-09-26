@@ -8,7 +8,7 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torchvision.transforms.functional as TVF
-from sklearn.preprocessing import minmax_scale, scale
+from sklearn.preprocessing import minmax_scale, robust_scale, scale
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
@@ -57,8 +57,8 @@ class IT_DATAMODULE(pl.LightningDataModule):
 
     def prepare_data(self):
 
-        if not os.path.exists("./cache/it/cnn_lstm"):
-            os.makedirs("./cache/it/cnn_lstm")
+        if not os.path.exists("./cache/it"):
+            os.makedirs("./cache/it")
 
         possible_cache_files = [
             f"./cache/it/X_train_ticker{self.ticker_idx}_{self.data_type}_lookback{self.lookback}_pred_horizon{self.pred_horizon}_multistep{self.multistep}_pred_target{self.pred_target}_multcolinthrsh_{self.multicolinearity_threshold}.npy",
@@ -169,7 +169,7 @@ def _format_tensors_it(
             ]
         )
         
-        features = pd.DataFrame(minmax_scale(features.values, feature_range=(-1, 1)), columns=features.columns, index=features.index)
+        features = pd.DataFrame(minmax_scale(features.values, feature_range=(-1, 1)), columns=features.columns, index=features.index).astype(np.float64)
 
     else:
         target = features.filter(regex=f"{ticker}_CP")
@@ -186,7 +186,7 @@ def _format_tensors_it(
         )  # Might make model worse but safety against any leakage (appears to actually improve performance)
 
         # Scale features
-        features = pd.DataFrame(scale(features.values), columns=features.columns, index=features.index)
+        features = pd.DataFrame(robust_scale(features.values), columns=features.columns, index=features.index).astype(np.float64)
 
     if multicolinearity_threshold:
         corr = features.corr()
@@ -233,11 +233,10 @@ def _format_tensors_it(
 
     # Define split indices (since numpy differs from list slicing)
     test_split = -1
-    val_split = (pred_horizon + 1) * -1
-    train_split = (2 * pred_horizon) * -1
+    val_split = -2
 
-    X_train, X_val, X_test = X[:train_split], X[val_split], X[test_split]
-    y_train, y_val, y_test = y[:train_split], y[val_split], y[test_split]
+    X_train, X_val, X_test = X[:val_split], X[val_split], X[test_split]
+    y_train, y_val, y_test = y[:val_split], y[val_split], y[test_split]
 
     X_val = X_val.reshape(1, X_val.shape[0], X_val.shape[1])
     X_test = X_test.reshape(1, X_test.shape[0], X_test.shape[1])

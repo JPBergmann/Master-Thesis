@@ -166,3 +166,4 @@ cache/
 .vscode/
 cross_sectorial/
 wandb/
+results/
